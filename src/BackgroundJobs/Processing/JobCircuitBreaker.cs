@@ -46,6 +46,8 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
         lock (_lock)
         {
             if (!_states.TryGetValue(name, out var s)) _states[name] = s = new State();
+            // A late success from a job claimed before the breaker opened must not skip the half-open trial.
+            if (success && s.Phase == Phase.Open) return;
             if (success)
             {
                 s.Phase = Phase.Closed;

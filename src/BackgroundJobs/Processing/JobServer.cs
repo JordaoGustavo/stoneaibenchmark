@@ -56,13 +56,20 @@ internal sealed class JobServer(
     public async Task StoppingAsync(CancellationToken cancellationToken)
     {
         _ready = false;
+        if (_stopping.IsCancellationRequested) return;
         await _stopping.CancelAsync();
         // Deliberately not bounded by the host's token: running jobs are awaited.
         await _run;
         logger.LogInformation("job server stopped");
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => StoppingAsync(cancellationToken);
+    /// The host calls StoppingAsync first; this covers hosts that only call StopAsync.
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await StoppingAsync(cancellationToken);
+        await _run;
+        _stopping.Dispose();
+    }
 
     public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;

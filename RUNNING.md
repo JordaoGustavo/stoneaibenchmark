@@ -57,7 +57,10 @@ A API HTTP de gerenciamento é opt-in: `app.MapBackgroundJobsApi()` (`/api/jobs`
 - Vários nós podem compartilhar o banco: claim com `FOR UPDATE SKIP LOCKED`, lease renovado por heartbeat
   (`LeaseDuration`, padrão 30 s). Jobs com lease vencido são recuperados como `interrupted`. Na inicialização,
   jobs presos ao próprio `NODE_ID` são recuperados na hora; por isso dois processos no mesmo host precisam de `NODE_ID`s diferentes.
+- Se o heartbeat não conseguir renovar o lease (banco fora por mais que `LeaseDuration`), o job pode ser
+  recuperado e executado de novo enquanto a execução original ainda roda (at-least-once); o resultado da
+  execução original é descartado pela checagem de `version`/`locked_by`.
 - Se o resultado de uma tentativa não puder ser gravado (banco fora), o job só é recuperado quando o lease vence.
 - Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo não usa.
-- `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`.
+- `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`; acima de 1000 jobs é preciso seguir o cursor.
 - A parada graciosa não tem limite de tempo; um `SIGTERM` com job longo espera o job terminar.
