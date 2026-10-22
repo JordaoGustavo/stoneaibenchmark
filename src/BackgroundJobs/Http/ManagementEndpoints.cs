@@ -1,0 +1,87 @@
+using System.Text.Json;
+using BackgroundJobs.Health;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace BackgroundJobs;
+
+public static class ManagementEndpoints
+{
+    /// Maps /api/jobs (list, get, delete, requeue) and /health. Opt-in.
+    public static IEndpointRouteBuilder MapBackgroundJobsApi(this IEndpointRouteBuilder app)
+    {
+        app.MapGet("/health", (JobServerHealthCheck health) => health.IsReady
+            ? Results.Ok(new { status = "ok" })
+            : Results.Json(new { status = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable));
+
+        var jobs = app.MapGroup("/api/jobs");
+
+        jobs.MapGet("/", async (IJobClient client, string? after, int? limit, CancellationToken ct) =>
+        {
+            Guid? cursor = null;
+            if (after != null)
+            {
+                if (!Guid.TryParse(after, out var parsed)) return Error(400, "after must be a job id");
+                cursor = parsed;
+            }
+            var pageSize = limit ?? 1000;
+            if (pageSize is < 1 or > 1000) return Error(400, "limit must be between 1 and 1000");
+            var page = await client.ListAsync(cursor, pageSize, ct);
+            return Results.Ok(new
+            {
+                items = page.Select(j => new { id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts }),
+                nextCursor = page.Count == pageSize ? page[^1].Id.ToString() : null,
+            });
+        });
+
+        jobs.MapGet("/{id}", (IJobClient client, string id, CancellationToken ct) =>
+            WithJob(id, async jobId => Results.Ok(ToView(await client.GetAsync(jobId, ct)))));
+
+        jobs.MapDelete("/{id}", (IJobClient client, string id, CancellationToken ct) =>
+            WithJob(id, async jobId =>
+            {
+                await client.DeleteAsync(jobId, ct);
+                return Results.Ok(new { id = jobId.ToString(), state = "deleted" });
+            }));
+
+        jobs.MapPost("/{id}/requeue", (IJobClient client, string id, CancellationToken ct) =>
+            WithJob(id, async jobId =>
+            {
+                await client.RequeueAsync(jobId, ct);
+                return Results.Accepted(value: new { jobId = jobId.ToString() });
+            }));
+
+        return app;
+    }
+
+    public static IResult Error(int status, string message) => Results.Json(new { error = message }, statusCode: status);
+
+    private static async Task<IResult> WithJob(string id, Func<Guid, Task<IResult>> action)
+    {
+        if (!Guid.TryParse(id, out var jobId)) return Error(404, $"job {id} not found");
+        try { return await action(jobId); }
+        catch (JobNotFoundException e) { return Error(404, e.Message); }
+        catch (InvalidJobTransitionException e) { return Error(409, e.Message); }
+    }
+
+    private static object ToView(Job job) => new
+    {
+        id = job.Id.ToString(),
+        name = job.Name,
+        args = job.Args,
+        state = job.State.ToWire(),
+        attempts = job.Attempts,
+        maxAttempts = job.MaxAttempts,
+        retryDelayMs = (int)job.RetryDelay.TotalMilliseconds,
+        scheduledAt = job.ScheduledAt,
+        createdAt = job.CreatedAt,
+        updatedAt = job.UpdatedAt,
+        history = job.History.Select(h => new { state = h.State.ToWire(), at = h.At, reason = h.Reason }),
+        attemptHistory = job.AttemptHistory.Select(a => new
+        {
+            attempt = a.Attempt, startedAt = a.StartedAt, finishedAt = a.FinishedAt, outcome = a.Outcome?.ToWire(), error = a.Error,
+        }),
+    };
+}
