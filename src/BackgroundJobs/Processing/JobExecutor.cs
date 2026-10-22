@@ -49,7 +49,9 @@ internal sealed class JobExecutor(
         }
         catch (Exception e)
         {
-            logger.LogInformation(e, "job {JobId} attempt {Attempt} failed", job.Id, job.Attempt);
+            // The stack trace goes in a scope: structured sinks keep it, the console shows one line.
+            using (logger.BeginScope(new Dictionary<string, object> { ["Exception"] = e.ToString() }))
+                logger.LogInformation("job {JobId} attempt {Attempt} failed: {Error}", job.Id, job.Attempt, e.Message);
             return string.IsNullOrEmpty(e.Message) ? e.GetType().Name : e.Message;
         }
     }

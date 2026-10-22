@@ -72,11 +72,11 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<SummaryRow>("""
-            SELECT id, name, state, attempts FROM bj_jobs
+            SELECT id, name, state, attempts, run_at, created_at, updated_at FROM bj_jobs
             WHERE @after::uuid IS NULL OR id > @after::uuid
             ORDER BY id LIMIT @limit
             """, new { after, limit });
-        return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts)).ToList();
+        return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt)).ToList();
     }
 
     public async Task<int> PromoteDueAsync(DateTime now, CancellationToken ct)
@@ -264,6 +264,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public string Name { get; set; } = "";
         public string State { get; set; } = "";
         public int Attempts { get; set; }
+        public DateTime? RunAt { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
     }
 
     private sealed class StaleRow

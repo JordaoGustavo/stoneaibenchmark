@@ -1,5 +1,7 @@
 # Como executar
 
+> **Integrando a biblioteca?** Veja o [Guia de Integração](docs/INTEGRACAO.md).
+
 Requisitos: .NET SDK 10 e Docker.
 
 ## Subir a demo
@@ -26,6 +28,8 @@ curl -s -XPOST localhost:8080/demo/jobs -H 'content-type: application/json' \
 curl -s localhost:8080/api/jobs/<id>
 curl -s localhost:8080/demo/events
 ```
+
+Painel: abra `http://localhost:8080/jobs` (ligado com `app.MapBackgroundJobsDashboard()`; HTML renderizado no servidor, sem JavaScript).
 
 ## Testes
 

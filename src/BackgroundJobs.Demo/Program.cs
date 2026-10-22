@@ -26,6 +26,7 @@ builder.Services.AddBackgroundJobs(
 
 var app = builder.Build();
 app.MapBackgroundJobsApi();
+app.MapBackgroundJobsDashboard();
 app.MapDemoEndpoints();
 app.Run();
 

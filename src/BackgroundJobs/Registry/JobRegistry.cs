@@ -23,7 +23,7 @@ public sealed class JobRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         var options = new JobRegistrationOptions();
         configure?.Invoke(options);
-        var registration = new JobRegistration(name, options, async (services, args, context) =>
+        var registration = new JobRegistration(name, typeof(TArgs), options, async (services, args, context) =>
         {
             var typedArgs = args.Deserialize<TArgs>(JobJson.Options)!;
             var job = ActivatorUtilities.GetServiceOrCreateInstance<TJob>(services);
@@ -36,10 +36,15 @@ public sealed class JobRegistry
     internal JobRegistration? Find(string name) => _jobs.GetValueOrDefault(name);
 
     internal IEnumerable<JobRegistration> All => _jobs.Values;
+
+    /// Registered job names with their argument types, ordered by name.
+    public IReadOnlyList<(string Name, Type ArgsType)> Registrations =>
+        _jobs.Values.OrderBy(r => r.Name, StringComparer.Ordinal).Select(r => (r.Name, r.ArgsType)).ToList();
 }
 
 internal sealed record JobRegistration(
     string Name,
+    Type ArgsType,
     JobRegistrationOptions Options,
     Func<IServiceProvider, JsonElement, JobContext, Task> Invoke);
 

@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace BackgroundJobs;
 
-public sealed record JobSummary(Guid Id, string Name, JobState State, int Attempts);
+public sealed record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt);
 
 public sealed record Job(
     Guid Id,

@@ -1,5 +1,7 @@
 # Biblioteca de jobs em background
 
+> **Integrando a biblioteca?** Veja o [Guia de Integração](docs/INTEGRACAO.md).
+
 ## 1. Objetivo
 
 Construir uma biblioteca de jobs em background como projeto comum para um estudo de workflows de desenvolvimento com agentes de IA. O desafio deve permitir observar decisões de especificação, planejamento, implementação e validação, com um resultado verificável.
