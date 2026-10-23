@@ -4,7 +4,10 @@
     <RootNamespace>BackgroundJobs</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- No ASP.NET Core: HTTP lives in BackgroundJobs.AspNetCore and BackgroundJobs.Dashboard. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
     <PackageReference Include="Npgsql" />
     <PackageReference Include="Dapper" />
   </ItemGroup>

@@ -19,8 +19,9 @@ public sealed class DemoProcess : IAsyncDisposable
         Api = new ApiClient(new Uri($"http://127.0.0.1:{port}"));
     }
 
+    /// A null <paramref name="connectionString"/> runs the demo on the in-memory store.
     public static async Task<DemoProcess> StartAsync(
-        string connectionString, int workers = 4, int? port = null, IReadOnlyDictionary<string, string>? env = null)
+        string? connectionString, int workers = 4, int? port = null, IReadOnlyDictionary<string, string>? env = null)
     {
         port ??= FreePort();
         var psi = new ProcessStartInfo("dotnet", DemoDll())
@@ -31,7 +32,8 @@ public sealed class DemoProcess : IAsyncDisposable
         };
         psi.Environment["PORT"] = port.ToString();
         psi.Environment["WORKER_COUNT"] = workers.ToString();
-        psi.Environment["DATABASE_URL"] = connectionString;
+        if (connectionString == null) psi.Environment["STORAGE"] = "memory";
+        else psi.Environment["DATABASE_URL"] = connectionString;
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         foreach (var (key, value) in env ?? new Dictionary<string, string>()) psi.Environment[key] = value;
 

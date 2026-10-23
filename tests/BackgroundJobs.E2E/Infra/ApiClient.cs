@@ -52,6 +52,8 @@ public sealed class ApiClient(Uri baseAddress)
 
     public Task<HttpResponseMessage> ListRawAsync(string query = "") => _http.GetAsync("/api/jobs" + query);
 
+    public Task<HttpResponseMessage> GetRawAsync(string path) => _http.GetAsync(path);
+
     public Task<HttpResponseMessage> DeleteAsync(string id) => _http.DeleteAsync($"/api/jobs/{id}");
 
     public Task<HttpResponseMessage> RequeueAsync(string id) => _http.PostAsync($"/api/jobs/{id}/requeue", null);

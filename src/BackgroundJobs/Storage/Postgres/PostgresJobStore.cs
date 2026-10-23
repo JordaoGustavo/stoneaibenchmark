@@ -35,14 +35,14 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         await conn.ExecuteAsync("""
-            INSERT INTO bj_jobs (id, name, args, state, max_attempts, retry_delay_ms, retry_jitter_ms,
+            INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
                                  run_at, enqueued_at, enqueue_seq, created_at, updated_at)
-            VALUES (@Id, @Name, @ArgsJson::jsonb, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
+            VALUES (@Id, @Name, @ArgsJson::jsonb, @ArgsVersion, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
                     @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now)
             """,
             new
             {
-                job.Id, job.Name, job.ArgsJson, State = state.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
+                job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = state.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
             }, tx);
         await InsertHistoryAsync(conn, tx, job.Id, state, job.Now, scheduled ? Reasons.ScheduledAtCreation : Reasons.Created);
@@ -61,7 +61,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
         var state = JobStateWire.ParseState(row.State);
         return new Job(
-            row.Id, row.Name, JsonDocument.Parse(row.ArgsJson).RootElement.Clone(), state, row.Attempts, row.MaxAttempts,
+            row.Id, row.Name, JsonDocument.Parse(row.ArgsJson).RootElement.Clone(), row.ArgsVersion, state, row.Attempts, row.MaxAttempts,
             TimeSpan.FromMilliseconds(row.RetryDelayMs), state == JobState.Scheduled ? row.RunAt : null,
             row.CreatedAt, row.UpdatedAt,
             history.Select(h => new JobHistoryEntry(JobStateWire.ParseState(h.State), h.At, h.Reason)).ToList(),
@@ -131,7 +131,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 INSERT INTO bj_history (job_id, state, at, reason)
                 SELECT id, 'processing', @now, @reason FROM claimed
             )
-            SELECT id, name, args::text AS args_json, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
+            SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
                    version, attempt_id, run
             FROM claimed
             ORDER BY enqueued_at, enqueue_seq
@@ -261,6 +261,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public Guid Id { get; set; }
         public string Name { get; set; } = "";
         public string ArgsJson { get; set; } = "";
+        public int ArgsVersion { get; set; }
         public string State { get; set; } = "";
         public int Attempts { get; set; }
         public int MaxAttempts { get; set; }

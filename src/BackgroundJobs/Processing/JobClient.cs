@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-internal sealed class JobClient(IJobStore store, Signals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
+internal sealed class JobClient(IJobStore store, JobRegistry registry, Signals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
 {
     public const int MaxPageSize = 1000;
 
@@ -19,10 +19,14 @@ internal sealed class JobClient(IJobStore store, Signals signals, IOptions<Backg
         if (retryDelay < TimeSpan.Zero || retryDelay.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryDelay is out of range");
         if (jitter < TimeSpan.Zero || jitter.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryJitter is out of range");
 
+        // Unknown names are accepted (they fail when executed) and get version 1.
+        var registration = registry.Find(jobName);
+        registration?.CheckArgs(args);
+
         var now = time.UtcNow();
         var id = Guid.CreateVersion7(now);
         await store.InsertAsync(new NewJob(
-            id, jobName, JsonSerializer.Serialize(args, JobJson.Options), maxAttempts,
+            id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, maxAttempts,
             (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now), ct);
         if (jobOptions?.RunAt?.UtcDateTime > now) signals.Scheduler.Set();
         else signals.Dispatcher.Set();

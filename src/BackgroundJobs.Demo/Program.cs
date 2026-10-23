@@ -20,10 +20,13 @@ builder.Services.AddSingleton(telemetry);
 var failBreaker = int.TryParse(Env("FAIL_BREAKER_THRESHOLD", ""), out var threshold)
     ? new CircuitBreakerOptions(threshold, TimeSpan.FromSeconds(int.Parse(Env("FAIL_BREAKER_SECONDS", "30"))))
     : null;
+// Which "greet" code this process runs: 1 = before its args changed, 2 = today.
+var greetVersion = int.Parse(Env("GREET_ARGS_VERSION", "2"));
 builder.Services.AddBackgroundJobs(
     o =>
     {
-        o.ConnectionString = ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs"));
+        if (Env("STORAGE", "postgres") == "memory") o.UseInMemoryStorage();
+        else o.ConnectionString = ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs"));
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
         o.NodeId = Env("NODE_ID", Environment.MachineName);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
@@ -32,7 +35,8 @@ builder.Services.AddBackgroundJobs(
     jobs => jobs
         .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name)
         .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
-        .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name));
+        .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name)
+        .RegisterGreet(greetVersion));
 
 var app = builder.Build();
 app.MapBackgroundJobsApi();
@@ -56,4 +60,15 @@ static string ToConnectionString(string value)
         Password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : null,
         Database = uri.AbsolutePath.Trim('/'),
     }.ConnectionString;
+}
+
+static partial class Registrations
+{
+    public static JobRegistry RegisterGreet(this JobRegistry jobs, int version) => version == 1
+        ? jobs.Register<GreetV1Job, GreetV1Args>(GreetJob.Name)
+        : jobs.Register<GreetJob, GreetArgs>(GreetJob.Name, o =>
+        {
+            o.ArgsVersion = 2;
+            o.UpgradeArgs(1, GreetJob.UpgradeFromV1);
+        });
 }

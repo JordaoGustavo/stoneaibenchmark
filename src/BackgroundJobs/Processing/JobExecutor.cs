@@ -64,7 +64,7 @@ internal sealed class JobExecutor(
         {
             await using var scope = scopes.CreateAsyncScope();
             using var args = JsonDocument.Parse(job.ArgsJson);
-            await registration.Invoke(scope.ServiceProvider, args.RootElement, new JobContext(job.Id, job.Attempt));
+            await registration.Invoke(scope.ServiceProvider, args.RootElement, job.ArgsVersion, new JobContext(job.Id, job.Attempt));
             return null;
         }
         catch (Exception e)

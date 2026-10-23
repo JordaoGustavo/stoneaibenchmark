@@ -1,6 +1,7 @@
 using BackgroundJobs.Health;
 using BackgroundJobs.Processing;
 using BackgroundJobs.Storage;
+using BackgroundJobs.Storage.InMemory;
 using BackgroundJobs.Storage.Postgres;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -25,8 +26,12 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(sp => new JobDataSource(
             NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<BackgroundJobsOptions>>().Value.ConnectionString)));
-        services.AddSingleton<IJobStore>(sp => new PostgresJobStore(sp.GetRequiredService<JobDataSource>().Db));
-        services.AddSingleton<PostgresJobListener>();
+        services.AddSingleton<IJobStore>(sp => InMemory(sp)
+            ? new InMemoryJobStore(sp.GetRequiredService<Signals>())
+            : new PostgresJobStore(sp.GetRequiredService<JobDataSource>().Db));
+        services.AddSingleton<IJobStoreListener>(sp => InMemory(sp)
+            ? new NoListener()
+            : ActivatorUtilities.CreateInstance<PostgresJobListener>(sp));
         services.AddMetrics();
         services.AddSingleton<Signals>();
         services.AddSingleton<StoreCircuitBreaker>();
@@ -44,5 +49,13 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<JobServer>(), sp.GetRequiredService<JobCircuitBreaker>(), sp.GetRequiredService<QueueMonitor>(),
             sp.GetRequiredService<IOptions<BackgroundJobsOptions>>(), sp.GetRequiredService<TimeProvider>()));
         return services;
+    }
+
+    private static bool InMemory(IServiceProvider sp) => sp.GetRequiredService<IOptions<BackgroundJobsOptions>>().Value.InMemory;
+
+    /// The in-memory store signals the loops itself; there is no other node to hear from.
+    private sealed class NoListener : IJobStoreListener
+    {
+        public Task RunAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }

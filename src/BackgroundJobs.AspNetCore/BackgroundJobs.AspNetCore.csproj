@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>BackgroundJobs.AspNetCore</PackageId>
+    <RootNamespace>BackgroundJobs</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../BackgroundJobs/BackgroundJobs.csproj" />
+  </ItemGroup>
+</Project>

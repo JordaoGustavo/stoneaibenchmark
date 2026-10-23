@@ -1,15 +1,21 @@
 namespace BackgroundJobs.Storage;
 
 internal sealed record NewJob(
-    Guid Id, string Name, string ArgsJson, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now);
+    Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now);
 
 /// A job this node just moved to processing, with its open attempt.
 internal sealed record ClaimedJob(
-    Guid Id, string Name, string ArgsJson, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs,
+    Guid Id, string Name, string ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs,
     int Version, Guid AttemptId, int Run);
 
 /// Jobs ready to run right now and when the oldest of them became ready.
 internal sealed record QueueStats(long Ready, DateTime? OldestReadyAt);
+
+/// Wakes the local loops when another node changes the store. Stores that only live in this process need none.
+internal interface IJobStoreListener
+{
+    Task RunAsync(CancellationToken ct);
+}
 
 internal interface IJobStore
 {

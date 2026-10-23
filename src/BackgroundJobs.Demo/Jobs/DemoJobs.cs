@@ -45,3 +45,40 @@ public sealed class LogMessageJob(EventLog events, ILogger<LogMessageJob> logger
         return Task.CompletedTask;
     }
 }
+
+/// "greet" before its args changed (args version 1). Kept so tests can run the old code against the same database.
+public sealed record GreetV1Args(string Who);
+
+public sealed class GreetV1Job(EventLog events) : IJob<GreetV1Args>
+{
+    public Task ExecuteAsync(GreetV1Args args, JobContext context)
+    {
+        events.Started(context);
+        events.Message(context, $"hello {args.Who}");
+        events.Finished(context, ok: true);
+        return Task.CompletedTask;
+    }
+}
+
+/// "greet" today: the single name was split in two, a breaking change, so the args version went to 2.
+public sealed record GreetArgs(string FirstName, string LastName);
+
+public sealed class GreetJob(EventLog events) : IJob<GreetArgs>
+{
+    public const string Name = "greet";
+
+    /// v1 {who: "Ada Lovelace"} → v2 {firstName: "Ada", lastName: "Lovelace"}.
+    public static System.Text.Json.Nodes.JsonObject UpgradeFromV1(System.Text.Json.Nodes.JsonObject v1)
+    {
+        var parts = (v1["who"]?.GetValue<string>() ?? "").Split(' ', 2);
+        return new() { ["firstName"] = parts[0], ["lastName"] = parts.Length > 1 ? parts[1] : "" };
+    }
+
+    public Task ExecuteAsync(GreetArgs args, JobContext context)
+    {
+        events.Started(context);
+        events.Message(context, $"hello {args.FirstName} ({args.LastName})");
+        events.Finished(context, ok: true);
+        return Task.CompletedTask;
+    }
+}

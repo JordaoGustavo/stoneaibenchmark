@@ -33,7 +33,7 @@ public static class DemoEndpoints
             return Results.Ok(new { spans, measurements });
         });
 
-        app.MapPost("/demo/jobs", async (HttpRequest http, IJobClient jobs, CancellationToken ct) =>
+        app.MapPost("/demo/jobs", async (HttpRequest http, IJobClient jobs, JobRegistry registry, CancellationToken ct) =>
         {
             try
             {
@@ -45,6 +45,10 @@ public static class DemoEndpoints
                     SucceedAfterJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<SucceedAfterArgs>(request.Params)), options, ct),
                     FailNTimesJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<FailNTimesArgs>(request.Params)), options, ct),
                     LogMessageJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<LogMessageArgs>(request.Params)), options, ct),
+                    // Whichever greet args this process registered (see GREET_ARGS_VERSION).
+                    GreetJob.Name when registry.Registrations.Contains((GreetJob.Name, typeof(GreetV1Args))) =>
+                        await jobs.EnqueueAsync(request.Job, Parse<GreetV1Args>(request.Params), options, ct),
+                    GreetJob.Name => await jobs.EnqueueAsync(request.Job, Parse<GreetArgs>(request.Params), options, ct),
                     _ => throw new BadRequest($"unknown job '{request.Job}'"),
                 };
                 return Results.Accepted(value: new { jobId = id.ToString() });

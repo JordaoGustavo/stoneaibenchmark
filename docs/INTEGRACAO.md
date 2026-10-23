@@ -26,13 +26,24 @@ Biblioteca .NET para execução de jobs em segundo plano persistidos em PostgreS
 
 - .NET 10 (`net10.0`; SDK fixado em `global.json`: `10.0.402`, `rollForward: latestFeature`)
 - PostgreSQL (testado com `postgres:17-alpine`)
-- Dependências trazidas pela biblioteca: `Npgsql` 9.0.3, `Dapper` 2.1.66 e `Microsoft.AspNetCore.App` (framework reference)
+- Dependências do núcleo: `Npgsql` 9.0.3, `Dapper` 2.1.66 e `Microsoft.Extensions.*` (hosting, health checks, métricas). O núcleo **não** depende de ASP.NET Core.
 
-Adicione a referência ao projeto:
+A biblioteca é dividida em três pacotes; referencie só o que usar:
+
+| Pacote | Conteúdo | Depende de |
+|---|---|---|
+| `BackgroundJobs` | `AddBackgroundJobs`, `IJobClient`, registro de jobs, stores Postgres e em memória, health check | — |
+| `BackgroundJobs.AspNetCore` | `MapBackgroundJobsApi()`: `/api/jobs`, `/health`, `/health/details` | `BackgroundJobs`, ASP.NET Core |
+| `BackgroundJobs.Dashboard` | `MapBackgroundJobsDashboard()`: UI HTML em `/jobs` | `BackgroundJobs`, ASP.NET Core |
 
 ```xml
 <ProjectReference Include="path/to/src/BackgroundJobs/BackgroundJobs.csproj" />
+<!-- opcionais -->
+<ProjectReference Include="path/to/src/BackgroundJobs.AspNetCore/BackgroundJobs.AspNetCore.csproj" />
+<ProjectReference Include="path/to/src/BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
 ```
+
+Os pacotes HTTP usam só a API pública do núcleo (`IJobClient`, `JobRegistry`, `JobServerHealthCheck`).
 
 Todos os tipos públicos ficam no namespace `BackgroundJobs` (o health check está em `BackgroundJobs.Health`).
 
@@ -48,8 +59,8 @@ builder.Services.AddBackgroundJobs(
     jobs => jobs.Register<SendEmailJob, SendEmailArgs>("send-email"));
 
 var app = builder.Build();
-app.MapBackgroundJobsApi();        // opcional: /health e /api/jobs
-app.MapBackgroundJobsDashboard();  // opcional: UI em /jobs
+app.MapBackgroundJobsApi();        // opcional (BackgroundJobs.AspNetCore): /health e /api/jobs
+app.MapBackgroundJobsDashboard();  // opcional (BackgroundJobs.Dashboard): UI em /jobs
 app.Run();
 
 public sealed record SendEmailArgs(string To, string Subject);
@@ -98,6 +109,47 @@ jobs.Register<TJob, TArgs>(string name, Action<JobRegistrationOptions>? configur
 - `name` é a chave estável persistida no banco. **Não renomeie** um job com instâncias pendentes.
 - Nome vazio ou duplicado lança `ArgumentException`.
 - Um job enfileirado com nome não registrado falha na execução com erro `"unknown job"` (consome tentativas normalmente).
+- O tipo de args faz parte do registro: `EnqueueAsync` com um nome registrado e args de outro tipo lança `ArgumentException`
+  (`JsonElement`/`JsonNode` são aceitos como JSON cru no formato atual).
+
+### Versionando os args
+
+Os args são gravados como JSON junto com o job e lidos **quando o job executa** — às vezes depois de um deploy.
+Todo job é persistido com a versão de args vigente no registro (coluna `args_version`, padrão `1`; aparece em `Job.ArgsVersion`). A estratégia:
+
+1. **Mudança compatível → não mude a versão.** Adicionar propriedade com valor padrão, remover propriedade
+   ou tornar algo opcional: o desserializador (`System.Text.Json`, camelCase) ignora campos desconhecidos e usa o
+   padrão para campos ausentes. Para isso funcionar, propriedades novas precisam ter padrão
+   (`record GreetArgs(string Who, string Greeting = "olá")`).
+2. **Mudança incompatível → incremente `ArgsVersion` e registre um upgrade** da versão anterior. Renomear,
+   mudar tipo ou dividir um campo são incompatíveis:
+
+   ```csharp
+   // v1: record GreetArgs(string Who)   v2: record GreetArgs(string FirstName, string LastName)
+   jobs.Register<GreetJob, GreetArgs>("greet", o =>
+   {
+       o.ArgsVersion = 2;
+       o.UpgradeArgs(1, v1 =>
+       {
+           var parts = v1["who"]!.GetValue<string>().Split(' ', 2);
+           return new JsonObject { ["firstName"] = parts[0], ["lastName"] = parts.ElementAtOrDefault(1) ?? "" };
+       });
+   });
+   ```
+
+   - Ao executar um job gravado na versão N < atual, os upgrades N→N+1→… são aplicados em memória antes de
+     desserializar. **Os args gravados não são reescritos** (o histórico continua mostrando o que foi enfileirado).
+   - `Register` exige um upgrade para cada versão de `1` até `ArgsVersion - 1`; faltando algum, lança `ArgumentException`
+     na inicialização — nunca em produção na hora de executar.
+   - Upgrades recebem e devolvem `JsonObject` (nomes em camelCase); mantenha-os para sempre, ou até ter certeza
+     de que não há mais jobs pendentes na versão antiga.
+3. **Job com versão mais nova que o código** (rollback, ou nó antigo durante um rolling deploy): a tentativa falha
+   com `args version 2 of job 'greet' is newer than the registered version 1` em vez de desserializar errado.
+   A falha consome tentativas como qualquer outra; depois do deploy, use **requeue** nos que esgotaram.
+   Para evitar: faça deploy primeiro do código que **lê** a versão nova e só depois do que **enfileira** com ela,
+   ou use outro nome de job (`greet-v2`) para mudanças grandes.
+
+Os cenários `tests/BackgroundJobs.E2E/Scenarios/S14_ArgsVersioning.cs` exercitam exatamente esse fluxo com dois deploys do demo.
 
 ## 4. Enfileirando e gerenciando jobs (`IJobClient`)
 
@@ -139,7 +191,7 @@ await client.EnqueueAsync("greet", new GreetArgs("em 2s"), new JobOptions
 
 ```csharp
 record JobSummary(Guid Id, string Name, JobState State, int Attempts);
-record Job(Guid Id, string Name, JsonElement Args, JobState State, int Attempts, int MaxAttempts,
+record Job(Guid Id, string Name, JsonElement Args, int ArgsVersion, JobState State, int Attempts, int MaxAttempts,
            TimeSpan RetryDelay, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
            IReadOnlyList<JobHistoryEntry> History, IReadOnlyList<JobAttempt> AttemptHistory);
 record JobHistoryEntry(JobState State, DateTime At, string Reason);
@@ -154,7 +206,7 @@ Datas em UTC (precisão de microssegundos, igual ao Postgres).
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `ConnectionString` | — (**obrigatória**) | Connection string Npgsql (`Host=...;Database=...`) |
+| `ConnectionString` | — (**obrigatória**, exceto com `UseInMemoryStorage()`) | Connection string Npgsql (`Host=...;Database=...`) |
 | `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
 | `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
@@ -225,9 +277,20 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
   O estado do breaker é em memória, por processo. Jobs bloqueados ficam em `enqueued`.
 - **Breaker do banco (automático):** se o Postgres cair, os loops internos fazem backoff exponencial (100 ms → 5 s) até voltar. Não é configurável.
 
+### Store em memória (testes)
+
+```csharp
+builder.Services.AddBackgroundJobs(o => o.UseInMemoryStorage(), jobs => ...);
+```
+
+Troca o Postgres por um store no próprio processo, com as mesmas transições, histórico, FIFO, retry, agendamento,
+delete/requeue e versão de args — útil para testes rápidos de quem integra a biblioteca, sem Docker.
+Não persiste nada (tudo some quando o processo termina) e não é compartilhado entre processos: **não use em produção**.
+O demo roda com ele via `STORAGE=memory`; `S13_InMemoryStore` roda os mesmos fluxos sem Postgres.
+
 ## 8. API HTTP (opcional)
 
-`app.MapBackgroundJobsApi()` — expõe:
+Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 
 | Método e rota | Sucesso | Erros |
 |---|---|---|
@@ -254,7 +317,7 @@ Coloque-as atrás de autenticação/rede interna conforme sua infraestrutura.
 
 ## 9. Dashboard (opcional)
 
-`app.MapBackgroundJobsDashboard(string prefix = "/jobs")` — UI HTML renderizada no servidor (sem JavaScript), com modo escuro.
+Pacote `BackgroundJobs.Dashboard`. `app.MapBackgroundJobsDashboard(string prefix = "/jobs")` — UI HTML renderizada no servidor (sem JavaScript), com modo escuro.
 
 - `GET {prefix}/` — lista paginada (50 por página), filtro por estado, auto-refresh a cada 5 s (desligável com `?refresh=off`).
 - `GET {prefix}/{id}` — detalhes, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete quando a transição é válida.
@@ -358,8 +421,10 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 | Registro / DI | `src/BackgroundJobs/DependencyInjection/ServiceCollectionExtensions.cs` |
 | Contratos públicos | `src/BackgroundJobs/Abstractions/` |
 | Estados e transições | `src/BackgroundJobs/Domain/` |
-| API HTTP | `src/BackgroundJobs/Http/ManagementEndpoints.cs` |
-| Dashboard | `src/BackgroundJobs/Http/DashboardEndpoints.cs` |
-| Schema | `src/BackgroundJobs/Storage/Postgres/Migrations/001_init.sql` |
+| Versionamento de args | `src/BackgroundJobs/Registry/JobRegistry.cs` |
+| Store em memória | `src/BackgroundJobs/Storage/InMemory/InMemoryJobStore.cs` |
+| API HTTP | `src/BackgroundJobs.AspNetCore/ManagementEndpoints.cs` |
+| Dashboard | `src/BackgroundJobs.Dashboard/DashboardEndpoints.cs` |
+| Schema | `src/BackgroundJobs/Storage/Postgres/Migrations/` |
 | Exemplo sem HTTP | `samples/WorkerExample/Program.cs` |
 | Exemplo com HTTP | `src/BackgroundJobs.Demo/Program.cs` |

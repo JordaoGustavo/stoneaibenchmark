@@ -18,6 +18,8 @@ Console.WriteLine($"enqueued {now} and scheduled {later}");
 
 await host.WaitForShutdownAsync(); // Ctrl+C stops gracefully, waiting for running jobs.
 
+// Args are persisted and read when the job runs, maybe after a deploy. Additive changes with defaults are safe;
+// a breaking change bumps ArgsVersion and registers UpgradeArgs (docs/INTEGRACAO.md, "Versionando os args").
 public sealed record GreetArgs(string Who);
 
 public sealed class GreetJob(ILogger<GreetJob> logger) : IJob<GreetArgs>

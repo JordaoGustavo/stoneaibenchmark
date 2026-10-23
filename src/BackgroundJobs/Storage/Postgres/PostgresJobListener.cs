@@ -1,4 +1,5 @@
 using BackgroundJobs.Processing;
+using BackgroundJobs.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -21,6 +22,7 @@ internal sealed class JobDataSource(NpgsqlDataSource db) : IAsyncDisposable
 /// LISTENs on a dedicated connection and wakes the local loops, so other nodes' writes are seen in ms.
 /// Polling remains the fallback while disconnected.
 internal sealed class PostgresJobListener(JobDataSource source, Signals signals, TimeProvider time, ILogger<PostgresJobListener> logger)
+    : IJobStoreListener
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromMilliseconds(500), MaxBackoff = TimeSpan.FromSeconds(30);
 

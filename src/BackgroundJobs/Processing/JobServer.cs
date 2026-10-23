@@ -1,5 +1,4 @@
 using BackgroundJobs.Storage;
-using BackgroundJobs.Storage.Postgres;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,7 +13,7 @@ internal sealed class JobServer(
     Scheduler scheduler,
     LeaseHeartbeat heartbeat,
     QueueMonitor queueMonitor,
-    PostgresJobListener listener,
+    IJobStoreListener listener,
     StoreCircuitBreaker storeBreaker,
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time,

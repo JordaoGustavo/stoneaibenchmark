@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <ItemGroup>
-    <ProjectReference Include="../BackgroundJobs/BackgroundJobs.csproj" />
+    <ProjectReference Include="../BackgroundJobs.AspNetCore/BackgroundJobs.AspNetCore.csproj" />
+    <ProjectReference Include="../BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
   </ItemGroup>
 </Project>

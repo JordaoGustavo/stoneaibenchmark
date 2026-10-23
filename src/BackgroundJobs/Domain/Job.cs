@@ -8,6 +8,8 @@ public sealed record Job(
     Guid Id,
     string Name,
     JsonElement Args,
+    /// The args version the job was enqueued with; see JobRegistrationOptions.ArgsVersion.
+    int ArgsVersion,
     JobState State,
     int Attempts,
     int MaxAttempts,

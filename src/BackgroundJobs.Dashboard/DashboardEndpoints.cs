@@ -148,9 +148,9 @@ public static class DashboardEndpoints
             body.Append("<a class=\"back\" href=\"").Append(basePath).Append("\">&larr; All jobs</a>");
             body.Append("<div class=\"head\"><div><h1>").Append(E(job.Name)).Append(' ').Append(Badge(job.State))
                 .Append("</h1><p class=\"mono muted\">").Append(job.Id).Append("</p></div><div class=\"actions\">");
-            if (Transitions.Requeue.Contains(job.State))
+            if (job.State.CanRequeue())
                 body.Append(ActionForm($"{basePath}/{job.Id}/requeue", "Requeue", "btn"));
-            if (Transitions.Delete.Contains(job.State))
+            if (job.State.CanDelete())
                 body.Append(ActionForm($"{basePath}/{job.Id}/delete", "Delete", "btn destructive"));
             body.Append("</div></div>");
             if (!string.IsNullOrEmpty(msg)) body.Append(Alert(msg, info: true));

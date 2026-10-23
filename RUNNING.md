@@ -29,7 +29,7 @@ curl -s localhost:8080/api/jobs/<id>
 curl -s localhost:8080/demo/events
 ```
 
-Painel: abra `http://localhost:8080/jobs` (ligado com `app.MapBackgroundJobsDashboard()`; HTML renderizado no servidor, sem JavaScript).
+Painel: abra `http://localhost:8080/jobs` (pacote `BackgroundJobs.Dashboard`, ligado com `app.MapBackgroundJobsDashboard()`; HTML renderizado no servidor, sem JavaScript).
 
 ## Testes
 
@@ -37,7 +37,8 @@ Painel: abra `http://localhost:8080/jobs` (ligado com `app.MapBackgroundJobsDash
 dotnet test
 ```
 
-Os testes E2E (`tests/BackgroundJobs.E2E/Scenarios`, um arquivo por critério de aceite 1–10, mais `S11_ApiContracts`)
+Os testes E2E (`tests/BackgroundJobs.E2E/Scenarios`, um arquivo por critério de aceite 1–10, mais `S11_ApiContracts`,
+`S12_Observability`, `S13_InMemoryStore` (demo com `STORAGE=memory`, sem Postgres) e `S14_ArgsVersioning`)
 sobem a demo como processo real contra um Postgres do Testcontainers, usando `kill -9` e `SIGTERM` de verdade.
 Precisam do Docker rodando.
 
@@ -54,7 +55,7 @@ var id = await client.EnqueueAsync("greet", new GreetArgs("now"),
     new JobOptions { RunAt = DateTimeOffset.UtcNow.AddSeconds(2), MaxAttempts = 5 });
 ```
 
-A API HTTP de gerenciamento é opt-in: `app.MapBackgroundJobsApi()` (`/api/jobs`, `/health` e `/health/details`).
+A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCore`: `app.MapBackgroundJobsApi()` (`/api/jobs`, `/health` e `/health/details`).
 
 ## Comportamento além da spec / limitações
 
