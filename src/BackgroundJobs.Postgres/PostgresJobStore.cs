@@ -46,7 +46,18 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         while (true)
         {
             await using var tx = await conn.BeginTransactionAsync(ct);
-            if (await InsertJobAsync(conn, tx, job))
+            var creation = job.Creation;
+            if (job.ContinueAfter is { } parentId)
+            {
+                // FOR SHARE conflicts with the row lock every UPDATE of the parent takes: a parent finishing concurrently
+                // either committed before (its finished state is read here) or waits for this insert to commit, and then
+                // its release, a later statement with a fresh snapshot, sees the new awaiting job.
+                var parentState = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT state FROM bj_jobs WHERE id = @parentId FOR SHARE", new { parentId }, tx);
+                if (parentState == null) throw new JobNotFoundException(parentId);
+                creation = JobTransition.CreateContinuation(JobStateWire.ParseState(parentState), job.Condition, job.RunAt > job.Now);
+            }
+            if (await InsertJobAsync(conn, tx, job, creation))
             {
                 await tx.CommitAsync(ct);
                 return job.Id;
@@ -63,30 +74,33 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     /// <summary>
     /// The predicate of the bj_jobs_idempotency_key partial index: the job holds its key.
     /// </summary>
-    private const string KeyHeld = "state IN ('scheduled', 'enqueued', 'processing')";
+    private const string KeyHeld = "state IN ('awaiting', 'scheduled', 'enqueued', 'processing')";
 
     /// <summary>
     /// False, inserting nothing, when an unfinished job holds job.IdempotencyKey.
     /// </summary>
-    private static async Task<bool> InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job)
+    private static async Task<bool> InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job, JobTransition? creation = null)
     {
-        var creation = job.Creation;
+        creation ??= job.Creation;
         var scheduled = creation.To == JobState.Scheduled;
+        var enqueued = creation.To == JobState.Enqueued;
         // The conflict target names the partial unique index by its columns and predicate. A sequence value taken by a
         // conflicting insert is lost, which only leaves a gap in the FIFO tie-breaker.
         var inserted = await conn.ExecuteAsync($"""
             INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
-                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority, idempotency_key)
+                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority, idempotency_key,
+                                 continue_after, continuation_condition, not_before)
             VALUES (@Id, @Name, @ArgsJson::jsonb, @ArgsVersion, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
-                    @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority,
-                    @IdempotencyKey)
+                    @RunAt, @EnqueuedAt, CASE WHEN @Enqueued THEN nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority,
+                    @IdempotencyKey, @ContinueAfter, @Condition, @NotBefore)
             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL AND {KeyHeld} DO NOTHING
             """,
             new
             {
                 job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = creation.To.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
-                RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
-                job.Queue, job.Priority, job.IdempotencyKey,
+                RunAt = scheduled ? job.RunAt : null, EnqueuedAt = enqueued ? job.Now : (DateTime?)null, Enqueued = enqueued, job.Now,
+                job.Queue, job.Priority, job.IdempotencyKey, job.ContinueAfter,
+                Condition = job.ContinueAfter == null ? null : job.Condition.ToWire(), NotBefore = job.ContinueAfter == null ? null : job.RunAt,
             }, tx);
         if (inserted == 0) return false;
         await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
@@ -111,7 +125,11 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             history.Select(h => new JobHistoryEntry(JobStateWire.ParseState(h.State), h.At, h.Reason)).ToList(),
             attempts.Select(a => new JobAttempt(a.Attempt, a.StartedAt, a.FinishedAt,
                 a.Outcome == null ? null : JobStateWire.ParseOutcome(a.Outcome), a.Error)).ToList(),
-            row.RefundedAttempts, row.Queue, row.Priority, row.IdempotencyKey);
+            row.RefundedAttempts, row.Queue, row.Priority, row.IdempotencyKey)
+        {
+            ContinueAfter = row.ContinueAfter,
+            Condition = row.ContinuationCondition == null ? null : JobStateWire.ParseCondition(row.ContinuationCondition),
+        };
     }
 
     public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, bool descending, CancellationToken ct)
@@ -395,7 +413,26 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         if (changed == 0) return false;
         await InsertHistoryAsync(conn, tx, id, t.To, now, t.Reason);
         await NotifyAsync(conn, tx, t.To);
+        if (JobStateWire.Finished.Contains(t.To)) await ReleaseContinuationsAsync(conn, tx, id, t.To, now);
         return true;
+    }
+
+    /// <summary>
+    /// JobTransition.ParentFinished for every awaiting continuation of the job that just finished, in the same transaction.
+    /// Locks go parent first, then children (also down a chain), the order every path takes, so they cannot deadlock. A
+    /// continuation inserted concurrently held the parent FOR SHARE, so this statement, run after the parent's UPDATE got
+    /// its lock, sees it committed.
+    /// </summary>
+    private static async Task ReleaseContinuationsAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid parentId, JobState parentState, DateTime now)
+    {
+        var children = (await conn.QueryAsync<AwaitingRow>(
+            "SELECT id, version, continuation_condition, not_before FROM bj_jobs " +
+            "WHERE continue_after = @parentId AND state = 'awaiting' ORDER BY id FOR UPDATE", new { parentId }, tx)).AsList();
+        foreach (var c in children)
+        {
+            var transition = JobTransition.ParentFinished(parentState, JobStateWire.ParseCondition(c.ContinuationCondition), c.NotBefore > now);
+            await TransitionAsync(conn, tx, c.Id, c.Version, transition, now, c.NotBefore);
+        }
     }
 
     public async Task<int> PurgeFinishedAsync(DateTime finishedBefore, int limit, CancellationToken ct)
@@ -525,6 +562,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public string Queue { get; set; } = "";
         public int Priority { get; set; }
         public string? IdempotencyKey { get; set; }
+        public Guid? ContinueAfter { get; set; }
+        public string? ContinuationCondition { get; set; }
         public string State { get; set; } = "";
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }
@@ -587,6 +626,14 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public DateTime UpdatedAt { get; set; }
         public string Queue { get; set; } = "";
         public int Priority { get; set; }
+    }
+
+    private sealed class AwaitingRow
+    {
+        public Guid Id { get; set; }
+        public int Version { get; set; }
+        public string ContinuationCondition { get; set; } = "";
+        public DateTime? NotBefore { get; set; }
     }
 
     private sealed class StaleRow

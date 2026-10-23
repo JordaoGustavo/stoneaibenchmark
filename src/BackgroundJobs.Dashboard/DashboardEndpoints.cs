@@ -182,6 +182,8 @@ public static class DashboardEndpoints
                 .Append(Meta("Created", Local(job.CreatedAt, tz, now)))
                 .Append(Meta("Updated", Local(job.UpdatedAt, tz, now)));
             if (job.ScheduledAt is { } at) body.Append(Meta("Scheduled for", Local(at, tz, now)));
+            if (job.ContinueAfter is { } parent)
+                body.Append(Meta("Continues after", $"<a class=\"mono\" href=\"{basePath}/{parent}\">{parent}</a> ({job.Condition?.ToWire()})"));
             body.Append("</dl></div>");
 
             body.Append("<div class=\"split\"><section><h2>Timeline</h2>");
@@ -569,6 +571,9 @@ public static class DashboardEndpoints
         .badge.enqueued{background:#dbeafe;color:#1d4ed8;border-color:#bfdbfe}.badge.processing,.badge.running{background:#fef3c7;color:#b45309;border-color:#fde68a}
         .badge.succeeded{background:#dcfce7;color:#15803d;border-color:#bbf7d0}.badge.failed{background:#fee2e2;color:#b91c1c;border-color:#fecaca}
         .badge.interrupted{background:#ffedd5;color:#c2410c;border-color:#fed7aa}.badge.scheduled{background:#ede9fe;color:#6d28d9;border-color:#ddd6fe}
+        .badge.awaiting{background:#cffafe;color:#0e7490;border-color:#a5f3fc}
+        @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .badge.awaiting{background:rgb(6 182 212/.15);color:#67e8f9;border-color:rgb(6 182 212/.3)}}
+        :root[data-theme=dark] .badge.awaiting{background:rgb(6 182 212/.15);color:#67e8f9;border-color:rgb(6 182 212/.3)}
         @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .badge.enqueued{background:rgb(59 130 246/.15);color:#93c5fd;border-color:rgb(59 130 246/.3)}:root:not([data-theme=light]) .badge.processing,:root:not([data-theme=light]) .badge.running{background:rgb(245 158 11/.15);color:#fcd34d;border-color:rgb(245 158 11/.3)}
         :root:not([data-theme=light]) .badge.succeeded{background:rgb(34 197 94/.15);color:#86efac;border-color:rgb(34 197 94/.3)}:root:not([data-theme=light]) .badge.failed{background:rgb(239 68 68/.15);color:#fca5a5;border-color:rgb(239 68 68/.3)}
         :root:not([data-theme=light]) .badge.interrupted{background:rgb(249 115 22/.15);color:#fdba74;border-color:rgb(249 115 22/.3)}:root:not([data-theme=light]) .badge.scheduled{background:rgb(139 92 246/.15);color:#c4b5fd;border-color:rgb(139 92 246/.3)}}

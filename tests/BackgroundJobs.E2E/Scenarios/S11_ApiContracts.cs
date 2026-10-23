@@ -83,7 +83,7 @@ public sealed class S11_ApiContracts(PostgresFixture pg)
         await demo.Api.WaitForStateAsync(id, "succeeded");
         var job = await (await demo.Api.GetJobRawAsync(id)).Content.ReadFromJsonAsync<JsonObject>();
         Assert.Equal(
-            ["id", "name", "args", "state", "attempts", "maxAttempts", "queue", "priority", "idempotencyKey", "retryDelayMs", "scheduledAt", "createdAt", "updatedAt", "history", "attemptHistory"],
+            ["id", "name", "args", "state", "attempts", "maxAttempts", "queue", "priority", "idempotencyKey", "retryDelayMs", "scheduledAt", "createdAt", "updatedAt", "history", "attemptHistory", "continueAfter", "continuationCondition"],
             job!.Select(p => p.Key));
         Assert.EndsWith("Z", job!["createdAt"]!.GetValue<string>());
         Assert.Equal(["state", "at", "reason"], job!["history"]![0]!.AsObject().Select(p => p.Key));

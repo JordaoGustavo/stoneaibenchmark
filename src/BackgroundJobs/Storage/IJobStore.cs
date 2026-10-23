@@ -26,6 +26,17 @@ public sealed record NewJob(
     /// Whether the job starts scheduled (RunAt in the future) or enqueued.
     /// </summary>
     public JobTransition Creation => JobTransition.Create(RunAt > Now);
+
+    /// <summary>
+    /// The parent of a continuation; null for a normal job. The store reads the parent's state in the same atomic step
+    /// as the insert and applies <see cref="JobTransition.CreateContinuation"/> instead of <see cref="Creation"/>.
+    /// </summary>
+    public Guid? ContinueAfter { get; init; }
+
+    /// <summary>
+    /// The continuation condition; used only with <see cref="ContinueAfter"/>.
+    /// </summary>
+    public ContinuationCondition Condition { get; init; }
 }
 
 /// <summary>
@@ -170,7 +181,9 @@ public static class JobSignalsExtensions
 /// - <see cref="JobTransition.ResetAttempts"/> sets attempts and refunded attempts to 0 and starts a new run;
 /// - <see cref="JobTransition.RefundAttempt"/> increments refunded attempts (attempt numbers keep growing);
 /// - clears a pending cancel request;
-/// - appends (To, now, Reason) to the history.
+/// - appends (To, now, Reason) to the history;
+/// - entering a <see cref="JobStateWire.Finished"/> state applies, in the same atomic step, <see cref="JobTransition.ParentFinished"/>
+///   to every awaiting continuation of the job (and so on down a chain whose continuations get cancelled).
 /// </summary>
 public interface IJobStore
 {
@@ -183,7 +196,11 @@ public interface IJobStore
     /// Applies <see cref="NewJob.Creation"/> and returns job.Id; or, when an unfinished job (not in
     /// <see cref="JobStateWire.Finished"/>) holds <see cref="NewJob.IdempotencyKey"/>, inserts nothing and returns that job's
     /// id. Atomic: of concurrent inserts with one key, exactly one creates a job.
+    /// With <see cref="NewJob.ContinueAfter"/>, applies <see cref="JobTransition.CreateContinuation"/> with the parent's
+    /// state read under a lock that excludes the parent's transitions, so a parent finishing concurrently either is seen
+    /// finished here or releases the new job; an awaiting job keeps RunAt to decide scheduled or enqueued on release.
     /// </summary>
+    /// <exception cref="JobNotFoundException">The parent does not exist.</exception>
     Task<Guid> InsertAsync(NewJob job, CancellationToken ct);
 
     /// <summary>

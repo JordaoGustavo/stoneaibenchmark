@@ -33,13 +33,19 @@ internal sealed class InMemoryJobStore : IJobStore
     /// </summary>
     private Guid InsertLocked(NewJob job)
     {
-        if (job.IdempotencyKey != null && _keyHolders.TryGetValue(job.IdempotencyKey, out var holder)) return holder;
         var creation = job.Creation;
+        if (job.ContinueAfter is { } parentId)
+        {
+            if (!_jobs.TryGetValue(parentId, out var parent)) throw new JobNotFoundException(parentId);
+            creation = JobTransition.CreateContinuation(parent.State, job.Condition, job.RunAt > job.Now);
+        }
+        if (job.IdempotencyKey != null && _keyHolders.TryGetValue(job.IdempotencyKey, out var holder)) return holder;
         var row = new Row
         {
             Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
             MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
             CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority, IdempotencyKey = job.IdempotencyKey,
+            ContinueAfter = job.ContinueAfter, Condition = job.ContinueAfter == null ? null : job.Condition, NotBefore = job.RunAt,
         };
         Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
         _jobs.Add(job.Id, row);
@@ -54,7 +60,7 @@ internal sealed class InMemoryJobStore : IJobStore
             return Task.FromResult<Job?>(new Job(
                 r.Id, r.Name, JsonDocument.Parse(r.ArgsJson).RootElement.Clone(), r.ArgsVersion, r.State, r.Attempts, r.MaxAttempts,
                 TimeSpan.FromMilliseconds(r.RetryDelayMs), r.State == JobState.Scheduled ? r.RunAt : null, r.CreatedAt, r.UpdatedAt,
-                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority, r.IdempotencyKey));
+                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority, r.IdempotencyKey) { ContinueAfter = r.ContinueAfter, Condition = r.Condition });
         }
     }
 
@@ -313,7 +319,20 @@ internal sealed class InMemoryJobStore : IJobStore
         if (t.ResetAttempts) { r.Attempts = 0; r.RefundedAttempts = 0; r.Run++; }
         else if (t.RefundAttempt) r.RefundedAttempts++;
         Enter(r, t, now, runAt);
+        if (JobStateWire.Finished.Contains(t.To)) ReleaseContinuations(r, now);
         return true;
+    }
+
+    /// <summary>
+    /// JobTransition.ParentFinished for every awaiting continuation of <paramref name="parent"/>, in creation order;
+    /// recursive through Apply, so a chain whose continuations get cancelled is settled at once. Callers hold the lock.
+    /// </summary>
+    private void ReleaseContinuations(Row parent, DateTime now)
+    {
+        var children = _jobs.Values.Where(c => c.ContinueAfter == parent.Id && c.State == JobState.Awaiting)
+            .OrderBy(c => c.Key, StringComparer.Ordinal).ToList();
+        foreach (var c in children)
+            Apply(c, JobTransition.ParentFinished(parent.State, c.Condition!.Value, c.NotBefore > now), c.Version, c.NotBefore, now);
     }
 
     private void Enter(Row r, JobTransition t, DateTime now, DateTime? runAt)
@@ -345,6 +364,12 @@ internal sealed class InMemoryJobStore : IJobStore
         public required string Queue { get; init; }
         public int Priority { get; init; }
         public string? IdempotencyKey { get; init; }
+        public Guid? ContinueAfter { get; init; }
+        public ContinuationCondition? Condition { get; init; }
+        /// <summary>
+        /// A continuation's RunAt, kept while it awaits its parent.
+        /// </summary>
+        public DateTime? NotBefore { get; init; }
         public JobState State { get; set; }
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }

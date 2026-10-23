@@ -18,6 +18,12 @@ entre versões menores.
 
 ### Adicionado
 
+- Continuações: `JobOptions.ContinueAfter` (id do job pai) e `JobOptions.Condition` (`ContinuationCondition.OnSucceeded`,
+  padrão, ou `OnFinished`). O job espera no novo estado `JobState.Awaiting` e, na mesma transação em que o pai finaliza,
+  é enfileirado (ou agendado, se o `RunAt` ainda estiver no futuro) ou cancelado (`continuation_condition_not_met`) se a
+  condição não foi atendida. `Job.ContinueAfter`/`Job.Condition`, campos `continueAfter`/`continuationCondition` na API
+  HTTP e no dashboard. Migration `011_continuations`. SPI: `NewJob.ContinueAfter`/`Condition`, e toda transição para um
+  estado finalizado precisa liberar as continuações (veja `IJobStore`).
 - `ClaimRequest.Names` (SPI de store): restringe o claim a esses nomes; `null` aceita qualquer nome. Stores de terceiros
   precisam aplicar o filtro (veja "Escrevendo um novo store" em `docs/INTEGRACAO.md`).
 

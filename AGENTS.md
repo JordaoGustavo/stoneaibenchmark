@@ -83,6 +83,12 @@ campos, ou 6 com segundos primeiro. O fuso padrão é UTC.
 - Isso deduplica **enfileiramentos**, não **execuções**. A entrega é at-least-once: o código do job também precisa ser
   idempotente.
 
+### Continuações
+
+- `new JobOptions { ContinueAfter = parentId, Condition = ContinuationCondition.OnFinished }`: o job fica em `awaiting`
+  até o pai finalizar; então vai para `enqueued` ou, se a condição (padrão `OnSucceeded`) não foi atendida, `cancelled`.
+  Pai inexistente: `JobNotFoundException`. Um pai por job; encadeie para sequências.
+
 ### Cancelamento e timeout
 
 - Repasse `context.CancellationToken` para toda chamada de I/O. Ele dispara em timeout, `CancelAsync`, parada do
@@ -114,7 +120,7 @@ campos, ou 6 com segundos primeiro. O fuso padrão é UTC.
 8. **Retry é de atraso fixo** (`RetryDelay` + jitter), sem backoff exponencial. `MaxAttempts` conta a primeira
    execução.
 9. **Job em `processing` não pode ser deletado** (`InvalidJobTransitionException`): use `CancelAsync`. `DeleteAsync`
-   aceita só `scheduled`/`enqueued`; `RequeueAsync`, só estados finalizados.
+   aceita só `scheduled`/`enqueued`/`awaiting`; `RequeueAsync`, só estados finalizados.
 10. **Fila sem consumidor:** um job numa fila que nenhum nó lista em `Queues` fica em `enqueued` para sempre (o health
     check mostra a fila como órfã). Nome de fila: `^[a-z0-9][a-z0-9_.-]{0,63}$`.
 11. **`MaxConcurrency` vale para o cluster inteiro** e precisa ser configurado igual em todos os nós. O circuit breaker
@@ -170,7 +176,7 @@ SDK fixado em `global.json` (`10.0.402`, `rollForward: latestFeature`). Versões
   contra `PostgresJobStore` e `InMemoryJobStore`, e os dois precisam passar.
 - **Regras de transição** só em `src/BackgroundJobs/Domain/Transitions.cs` (`JobTransition`). Stores só aplicam.
 - **Migrations SQL numeradas**: novo arquivo `src/BackgroundJobs.Postgres/Migrations/NNN_descricao.sql` com o próximo
-  número (hoje o último é `010`). São aplicadas em ordem de nome e registradas em `bj_migrations`: **nunca edite uma
+  número (hoje o último é `011`). São aplicadas em ordem de nome e registradas em `bj_migrations`: **nunca edite uma
   migration existente**. Comente o porquê de cada índice/coluna no próprio SQL.
 - **`TreatWarningsAsErrors`** está ligado para todos os projetos (`Directory.Build.props`), assim como `Nullable`.
 - **API pública**: os pacotes usam `Microsoft.CodeAnalysis.PublicApiAnalyzers`. Ao adicionar, mudar ou remover um membro

@@ -38,11 +38,26 @@ public sealed record JobOptions
     public int? Priority { get; init; }
 
     /// <summary>
-    /// While a job enqueued with this key is not finished (scheduled, enqueued or processing), enqueueing the key again
+    /// While a job enqueued with this key is not finished (awaiting, scheduled, enqueued or processing), enqueueing the key again
     /// creates nothing and returns that job's id, whatever the new name, args and options. Once it finished, the key is free. Up to <see cref="MaxIdempotencyKeyLength"/>
     /// characters, not blank. Null: no deduplication.
     /// </summary>
     public string? IdempotencyKey { get; init; }
+
+    /// <summary>
+    /// Makes the job a continuation of this parent job: it waits in <see cref="JobState.Awaiting"/> until the parent
+    /// reaches a finished state, then, in the same atomic step, it is enqueued (scheduled if <see cref="RunAt"/> is still
+    /// ahead) when <see cref="Condition"/> is met, or cancelled when it is not. A parent already finished decides at once.
+    /// A parent that does not exist (or was purged) makes the enqueue throw <see cref="JobNotFoundException"/>.
+    /// One parent per job; chain continuations for sequences. Null: a normal job.
+    /// </summary>
+    public Guid? ContinueAfter { get; init; }
+
+    /// <summary>
+    /// With <see cref="ContinueAfter"/>: when the continuation runs. Defaults to <see cref="ContinuationCondition.OnSucceeded"/>.
+    /// Ignored without a parent.
+    /// </summary>
+    public ContinuationCondition? Condition { get; init; }
 
     /// <summary>
     /// Longest accepted <see cref="IdempotencyKey"/>, in characters.

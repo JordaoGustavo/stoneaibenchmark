@@ -103,6 +103,8 @@ Campos `null` usam os padrões de `BackgroundJobsOptions`.
 | `int? Priority { get; init; }` | `-100..100`, padrão `0`; maior roda primeiro na fila |
 | `string? IdempotencyKey { get; init; }` | Deduplica enquanto o job com a chave não finalizou. Não pode ser em branco |
 | `const int MaxIdempotencyKeyLength = 200` | |
+| `Guid? ContinueAfter { get; init; }` | Continuação: o job espera em `awaiting` até este job pai finalizar e então é liberado (`enqueued`, ou `scheduled` se `RunAt` ainda estiver no futuro) ou cancelado, conforme `Condition`, na mesma operação atômica que finaliza o pai. Pai já finalizado: decide no enqueue. Pai inexistente (ou já purgado): `JobNotFoundException`. Um pai por job |
+| `ContinuationCondition? Condition { get; init; }` | Com `ContinueAfter`: `OnSucceeded` (padrão; pai em outro estado final → continuação `cancelled`, motivo `continuation_condition_not_met`) ou `OnFinished` (qualquer estado final: `succeeded`, `failed`, `deleted`, `cancelled`). Ignorado sem pai |
 
 ### `sealed class BackgroundJobsOptions`
 
@@ -147,7 +149,11 @@ sealed record Job(Guid Id, string Name, JsonElement Args, int ArgsVersion, JobSt
     TimeSpan RetryDelay, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
     IReadOnlyList<JobHistoryEntry> History, IReadOnlyList<JobAttempt> AttemptHistory,
     int RefundedAttempts = 0, string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null)
+{
+    Guid? ContinueAfter { get; init; }                 // pai da continuação; null para job comum
+    ContinuationCondition? Condition { get; init; }    // condição da continuação; null para job comum
+}
 sealed record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt,
     DateTime UpdatedAt, string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority);
 sealed record JobHistoryEntry(JobState State, DateTime At, string Reason);
@@ -206,8 +212,9 @@ static class RecurringJobIds { static bool IsValid(string? id); } // ^[A-Za-z0-9
 ## Estados e transições
 
 ```csharp
-enum JobState { Scheduled, Enqueued, Processing, Succeeded, Failed, Deleted, Cancelled }
+enum JobState { Scheduled, Enqueued, Processing, Succeeded, Failed, Deleted, Cancelled, Awaiting }
 enum AttemptOutcome { Succeeded, Failed, Interrupted, Cancelled }
+enum ContinuationCondition { OnSucceeded, OnFinished }
 ```
 
 `static class JobStateWire`:
@@ -217,6 +224,8 @@ enum AttemptOutcome { Succeeded, Failed, Interrupted, Cancelled }
 | `string ToWire(this JobState)` / `string ToWire(this AttemptOutcome)` | Nome em minúsculas |
 | `JobState ParseState(string)` / `AttemptOutcome ParseOutcome(string)` | Sem diferenciar maiúsculas; `ArgumentException` se desconhecido |
 | `IReadOnlyList<JobState> Finished` | `Succeeded`, `Failed`, `Deleted`, `Cancelled` (sujeitos à retenção) |
+| `string ToWire(this ContinuationCondition)` / `ContinuationCondition ParseCondition(string)` | `on_succeeded` / `on_finished` |
+| `bool IsMetBy(this ContinuationCondition, JobState parent)` | Se um pai que finalizou nesse estado libera a continuação |
 | `bool CanDelete(this JobState)` / `CanCancel` / `CanRequeue` | Se a operação aceita o estado |
 
 `sealed record JobTransition(string Operation, IReadOnlyList<JobState> From, JobState To, string Reason, bool ResetAttempts = false, bool RefundAttempt = false)`,
@@ -231,13 +240,18 @@ com `bool Allows(JobState)`. Transições:
 | `Fail(bool retry)` | `Processing` → `Scheduled` / `Failed` | `retry_scheduled` / `max_attempts_exhausted` |
 | `Recover(int attempts, int maxAttempts)` | `Processing` → `Enqueued` / `Failed` | `recovered_after_crash` / `max_attempts_exhausted` |
 | `Interrupt` | `Processing` → `Enqueued` (`RefundAttempt`) | `interrupted_by_shutdown` |
-| `Cancel` | `Scheduled`, `Enqueued`, `Processing` → `Cancelled` | `cancelled_by_user` |
-| `Delete` | `Scheduled`, `Enqueued` → `Deleted` | `deleted_by_user` |
+| `CreateContinuation(JobState parent, ContinuationCondition, bool scheduled)` | (novo) → `Awaiting` (pai não finalizado) / como `Create` (condição atendida) / `Cancelled` | `awaiting_parent` / `created`, `scheduled_at_creation` / `continuation_condition_not_met` |
+| `ParentFinished(JobState parent, ContinuationCondition, bool scheduled)` | `Awaiting` → `Enqueued` / `Scheduled` / `Cancelled` | `parent_finished` / `continuation_condition_not_met` |
+| `Cancel` | `Scheduled`, `Enqueued`, `Processing`, `Awaiting` → `Cancelled` | `cancelled_by_user` |
+| `Delete` | `Scheduled`, `Enqueued`, `Awaiting` → `Deleted` | `deleted_by_user` |
 | `Requeue` | estados finalizados → `Enqueued` (`ResetAttempts`) | `requeued_by_user` |
 
 `static class Reasons` traz esses motivos como constantes: `Created`, `ScheduledAtCreation`, `BecameDue`, `Claimed`,
 `Succeeded`, `RetryScheduled`, `MaxAttemptsExhausted`, `RecoveredAfterCrash`, `InterruptedByShutdown`, `DeletedByUser`,
-`RequeuedByUser`, `CancelledByUser`.
+`RequeuedByUser`, `CancelledByUser`, `AwaitingParent`, `ParentFinished`, `ContinuationConditionNotMet`.
+
+Toda transição para um estado finalizado aplica `ParentFinished` às continuações `awaiting` do job na mesma operação
+atômica (em cadeia: uma continuação cancelada cancela ou libera as suas).
 
 ## Health check (`BackgroundJobs.Health`)
 
@@ -279,7 +293,7 @@ comentários de `src/BackgroundJobs/Storage/IJobStore.cs` e é verificado por `t
 | `interface IJobStoreListener` | `Task RunAsync(CancellationToken ct)`: acorda os loops quando outro nó muda o store |
 | `interface IJobSignals` | `void JobsReady()`, `void SchedulesChanged()` |
 | `static class JobSignalsExtensions` | `void Entered(this IJobSignals, JobState)` |
-| `sealed record NewJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now, string Queue, int Priority, string? IdempotencyKey = null)` | `JobTransition Creation` |
+| `sealed record NewJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now, string Queue, int Priority, string? IdempotencyKey = null)` | `JobTransition Creation`; `Guid? ContinueAfter { get; init; }`, `ContinuationCondition Condition { get; init; }`: com pai, o store lê o estado dele sob lock e aplica `JobTransition.CreateContinuation` |
 | `sealed record ClaimedJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, int Version, Guid AttemptId, int Run, int RefundedAttempts)` | `int CountedAttempts` |
 | `sealed record ClaimRequest(string Queue, ClaimOrder Order, string NodeId, DateTime Now, TimeSpan LeaseDuration, int Limit, IReadOnlyCollection<string> ExcludedNames, IReadOnlyDictionary<string, int> ConcurrencyLimits)` | |
 | `enum ClaimOrder { Priority, Fifo }` | |

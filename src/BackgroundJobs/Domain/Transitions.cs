@@ -29,6 +29,12 @@ public static class Reasons
     public const string RequeuedByUser = "requeued_by_user";
     /// <summary>A user cancelled it.</summary>
     public const string CancelledByUser = "cancelled_by_user";
+    /// <summary>Created as a continuation of an unfinished parent; it waits for it.</summary>
+    public const string AwaitingParent = "awaiting_parent";
+    /// <summary>Its parent finished meeting the continuation condition; it was released.</summary>
+    public const string ParentFinished = "parent_finished";
+    /// <summary>Its parent finished without meeting the continuation condition; it will not run.</summary>
+    public const string ContinuationConditionNotMet = "continuation_condition_not_met";
 }
 
 /// <summary>
@@ -53,6 +59,25 @@ public sealed record JobTransition(
     public static JobTransition Create(bool scheduled) => scheduled
         ? new("create", [], JobState.Scheduled, Reasons.ScheduledAtCreation)
         : new("create", [], JobState.Enqueued, Reasons.Created);
+
+    /// <summary>
+    /// The state and reason a new continuation starts with, given its parent's state when it is inserted: awaiting while
+    /// the parent is unfinished; otherwise as <see cref="Create"/> when <paramref name="condition"/> is met, or cancelled.
+    /// </summary>
+    public static JobTransition CreateContinuation(JobState parent, ContinuationCondition condition, bool scheduled) =>
+        !JobStateWire.Finished.Contains(parent) ? new("create", [], JobState.Awaiting, Reasons.AwaitingParent)
+        : condition.IsMetBy(parent) ? Create(scheduled)
+        : new("create", [], JobState.Cancelled, Reasons.ContinuationConditionNotMet);
+
+    /// <summary>
+    /// What happens to an awaiting continuation when its parent finishes in <paramref name="parent"/>: released (enqueued,
+    /// or scheduled when its RunAt is still ahead) when <paramref name="condition"/> is met, cancelled otherwise.
+    /// Applied in the same atomic step as the parent's transition into a finished state.
+    /// </summary>
+    public static JobTransition ParentFinished(JobState parent, ContinuationCondition condition, bool scheduled) =>
+        condition.IsMetBy(parent)
+            ? new("release", [JobState.Awaiting], scheduled ? JobState.Scheduled : JobState.Enqueued, Reasons.ParentFinished)
+            : new("release", [JobState.Awaiting], JobState.Cancelled, Reasons.ContinuationConditionNotMet);
 
     /// <summary>A scheduled job whose run time passed becomes enqueued.</summary>
     public static readonly JobTransition Promote = new("promote", [JobState.Scheduled], JobState.Enqueued, Reasons.BecameDue);
@@ -88,13 +113,13 @@ public sealed record JobTransition(
     /// with this transition (see IJobStore.CancelAsync).
     /// </summary>
     public static readonly JobTransition Cancel =
-        new("cancel", [JobState.Scheduled, JobState.Enqueued, JobState.Processing], JobState.Cancelled, Reasons.CancelledByUser);
+        new("cancel", [JobState.Scheduled, JobState.Enqueued, JobState.Processing, JobState.Awaiting], JobState.Cancelled, Reasons.CancelledByUser);
 
     /// <summary>
     /// Removes a job that has not started; it stays visible as deleted until retention purges it.
     /// </summary>
     public static readonly JobTransition Delete =
-        new("delete", [JobState.Scheduled, JobState.Enqueued], JobState.Deleted, Reasons.DeletedByUser);
+        new("delete", [JobState.Scheduled, JobState.Enqueued, JobState.Awaiting], JobState.Deleted, Reasons.DeletedByUser);
 
     /// <summary>
     /// Runs a finished job again from attempt 1, keeping its history.
@@ -113,6 +138,7 @@ public sealed record JobTransition(
         "cancel" => Cancel.From,
         "delete" => Delete.From,
         "requeue" => Requeue.From,
+        "release" => [JobState.Awaiting],
         _ => null,
     };
 }
