@@ -264,7 +264,7 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `RetentionBatchSize` | `1000` | Jobs removidos por comando de limpeza (a limpeza repete até esgotar) |
 | `WorkerCount` | `4` | Workers da fila `default` quando `Queues` está vazio (≥ 1); ignorado caso contrário |
 | `Queues` | vazio | Filas que este processo consome → workers de cada uma, ex. `{ ["default"] = 4, ["critical"] = 2 }`. Vazio = só `default` com `WorkerCount` |
-| `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
+| `NodeId` | `MachineName` + sufixo aleatório | Identidade do processo como dono do lease. Já é único por instância; se sobrescrever, **mantenha único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
 | `PollInterval` | `250ms` | Polling de fallback da fila (o caminho normal é LISTEN/NOTIFY do Postgres) |
 | `SchedulerMaxWait` | `5s` | Espera máxima do agendador; normalmente dorme até o próximo `run_at` ou acorda por notificação |
@@ -297,7 +297,7 @@ builder.Services.AddBackgroundJobs(o =>
 {
     o.FinishedJobRetention = builder.Configuration.GetValue<TimeSpan?>("Jobs:Retention");
     o.WorkerCount = builder.Configuration.GetValue("Jobs:WorkerCount", 4);
-    o.NodeId = Environment.GetEnvironmentVariable("NODE_ID") ?? Environment.MachineName;
+    o.NodeId = Environment.GetEnvironmentVariable("NODE_ID") ?? o.NodeId;
 }, jobs => ...)
 .UsePostgres(builder.Configuration.GetConnectionString("Jobs")!);
 ```
@@ -507,9 +507,9 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 
 ## 12. Operação: múltiplos nós, crash e shutdown
 
-- **Múltiplos nós:** suportado. Cada processo deve ter `NodeId` **único** — na partida, um nó recupera imediatamente todos os jobs presos com o seu próprio `NodeId`. Dois processos com o mesmo id roubariam jobs um do outro.
+- **Múltiplos nós:** suportado. O `NodeId` padrão é único por instância (nome da máquina + sufixo aleatório), então várias réplicas na mesma máquina ou imagem não colidem. Se definir o seu, mantenha-o único: dois processos vivos com o mesmo id renovariam os leases um do outro.
 - **Lease e heartbeat:** cada job em execução tem um lease de `LeaseDuration`, renovado a cada `LeaseDuration / 3`. Se o nó morrer, outro nó recupera o job após o lease expirar; a tentativa vira `interrupted` e conta para `MaxAttempts`.
-- **Reinício com mesmo `NodeId`:** recupera os jobs desse nó na hora, sem esperar o lease.
+- **Reinício após crash:** a recuperação é sempre por lease expirado, nunca pelo id do nó — os jobs do processo morto voltam à fila em até ~`LeaseDuration` (+ `LeaseDuration / 3` do heartbeat). Reduza `LeaseDuration` se precisar de recuperação mais rápida.
 - **Parada graciosa:** ao parar, o servidor deixa de pegar novos jobs, sinaliza `context.CancellationToken` e **espera os em execução terminarem**, até `ShutdownTimeout` (sem limite por padrão); jobs que param pelo token, ou que passam do limite, voltam para a fila na hora sem gastar tentativa (o HTTP continua aceitando enqueues durante o drain). Ajuste o timeout do host conforme sua plataforma:
 
   ```csharp

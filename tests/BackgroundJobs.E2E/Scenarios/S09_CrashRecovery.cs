@@ -11,13 +11,15 @@ public sealed class S09_CrashRecovery(PostgresFixture pg)
     public async Task Interrupted_attempt_is_recorded_and_counts_against_max_attempts(int maxAttempts, string finalState, string[] outcomes)
     {
         var db = await pg.CreateDatabaseAsync();
-        var demo = await DemoProcess.StartAsync(db);
+        // Recovery waits for the lease to expire, even on a restart of the same machine.
+        var shortLease = new Dictionary<string, string> { ["LEASE_MS"] = "1500" };
+        var demo = await DemoProcess.StartAsync(db, env: shortLease);
 
         var id = await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 3000 }, new { maxAttempts });
         await demo.Api.WaitForEventsAsync(e => e.Any(x => x.JobId == id && x.Type == "started"));
         await demo.KillAsync();
 
-        await using var restarted = await DemoProcess.StartAsync(db);
+        await using var restarted = await DemoProcess.StartAsync(db, env: shortLease);
         var job = await restarted.Api.WaitForStateAsync(id, finalState);
 
         Assert.Equal(outcomes, job.AttemptHistory.Select(a => a.Outcome));

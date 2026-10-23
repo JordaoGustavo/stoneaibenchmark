@@ -246,15 +246,15 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return requested;
     }
 
-    public async Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct)
+    public async Task<int> RecoverAsync(DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var stale = (await conn.QueryAsync<StaleRow>("""
             SELECT id, version, run, attempts - refunded_attempts AS attempts, max_attempts, cancel_requested_at IS NOT NULL AS cancel_requested FROM bj_jobs
-            WHERE state = 'processing' AND (lease_expires_at < @now OR locked_by = @ownNodeId)
+            WHERE state = 'processing' AND lease_expires_at < @now
             FOR UPDATE SKIP LOCKED
-            """, new { now, ownNodeId }, tx)).ToList();
+            """, new { now }, tx)).ToList();
 
         foreach (var job in stale)
         {

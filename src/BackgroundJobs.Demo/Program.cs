@@ -35,7 +35,7 @@ var jobs = builder.Services.AddBackgroundJobs(
                 throw new ArgumentException($"QUEUES entry '{queue}' must be name=workers");
             o.Queues[parts[0]] = workers;
         }
-        o.NodeId = Env("NODE_ID", Environment.MachineName);
+        o.NodeId = Env("NODE_ID", o.NodeId);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
         // Required by the library. "unset" leaves it unset so tests can see startup refuse it.
         o.FinishedJobRetention = Env("RETENTION_SECONDS", "604800") switch

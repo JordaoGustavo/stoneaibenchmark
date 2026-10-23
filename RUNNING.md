@@ -16,7 +16,7 @@ dotnet run --project src/BackgroundJobs.Demo
 | `PORT`         | `8080`                                                                       |
 | `WORKER_COUNT` | `4`                                                                          |
 | `DATABASE_URL` | `Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs` (também aceita `postgres://user:pass@host:5432/db`) |
-| `NODE_ID`      | nome da máquina                                                              |
+| `NODE_ID`      | nome da máquina + sufixo aleatório (único por instância)                     |
 | `QUEUES`       | vazio = só `default` com `WORKER_COUNT` workers; ex. `default=4,critical=2`  |
 | `FIFO_CLAIM_EVERY` | `10`; `off` = prioridade estrita                                          |
 | `RECURRING_HEARTBEAT_CRON` | vazio; ex. `*/30 * * * * *` declara o recorrente `heartbeat` (job `log-message`) |
@@ -66,8 +66,9 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
 ## Comportamento além da spec / limitações
 
 - Vários nós podem compartilhar o banco: claim com `FOR UPDATE SKIP LOCKED`, lease renovado por heartbeat
-  (`LeaseDuration`, padrão 30 s). Jobs com lease vencido são recuperados como `interrupted`. Na inicialização,
-  jobs presos ao próprio `NODE_ID` são recuperados na hora; por isso dois processos no mesmo host precisam de `NODE_ID`s diferentes.
+  (`LeaseDuration`, padrão 30 s). Jobs com lease vencido são recuperados como `interrupted`. A recuperação é
+  só por lease vencido (nunca pelo `NODE_ID`), inclusive ao reiniciar após um crash: os jobs voltam em até ~`LeaseDuration`
+  (use `LEASE_MS` para encurtar em testes manuais).
 - Se o heartbeat não conseguir renovar o lease (banco fora por mais que `LeaseDuration`), o job pode ser
   recuperado e executado de novo enquanto a execução original ainda roda (at-least-once); o resultado da
   execução original é descartado pela checagem de `version`/`locked_by`.

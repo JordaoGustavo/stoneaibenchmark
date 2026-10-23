@@ -20,7 +20,7 @@ internal sealed class LeaseHeartbeat(
                 () => store.RenewLeasesAsync(o.NodeId, dispatcher.RunningIds(), time.UtcNow() + o.LeaseDuration, ct), ct);
             foreach (var id in cancelRequested ?? []) cancels.Request(id);
             await storeBreaker.TryAsync("register-consumer", () => RegisterAsync(store, o, time, ct), ct);
-            var recovered = await storeBreaker.TryAsync("recover", () => store.RecoverAsync(time.UtcNow(), null, ct), ct);
+            var recovered = await storeBreaker.TryAsync("recover", () => store.RecoverAsync(time.UtcNow(), ct), ct);
             if (recovered > 0) signals.JobsReady();
         }
     }

@@ -135,10 +135,10 @@ public interface IJobStore
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
     Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct);
 
-    /// For every processing job whose lease expired (and, when given, every job held by <paramref name="ownNodeId"/>):
+    /// For every processing job whose lease expired:
     /// closes its open attempts as interrupted and applies <see cref="JobTransition.Recover"/>; or, when a cancel was
     /// requested, as cancelled with <see cref="JobTransition.Cancel"/>.
-    Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct);
+    Task<int> RecoverAsync(DateTime now, CancellationToken ct);
 
     /// One entry per queue that has ready jobs, whether or not this node consumes it. HasConsumer: a registration of
     /// <see cref="RegisterConsumerAsync"/> for the queue is still alive at <paramref name="now"/>.

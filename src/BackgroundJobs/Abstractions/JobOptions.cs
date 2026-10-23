@@ -54,8 +54,9 @@ public sealed class BackgroundJobsOptions
 
     internal int TotalWorkers => ConsumedQueues.Values.Sum();
 
-    /// Identifies this process as lease owner. Restarting with the same id recovers its jobs immediately.
-    public string NodeId { get; set; } = Environment.MachineName;
+    /// Identifies this process as lease owner; must be unique among live processes. The default (machine name plus a
+    /// random suffix) is unique per instance, so several processes on one machine or image never share it.
+    public string NodeId { get; set; } = $"{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
 
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(30);
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(250);

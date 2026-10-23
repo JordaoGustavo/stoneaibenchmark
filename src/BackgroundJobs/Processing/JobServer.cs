@@ -46,8 +46,8 @@ internal sealed class JobServer(
             while (await storeBreaker.TryAsync("startup", async () =>
                    {
                        await store.MigrateAsync(ct);
-                       // Our own node id: jobs it held were interrupted by our previous crash; no need to wait for the lease.
-                       var recovered = await store.RecoverAsync(time.UtcNow(), o.NodeId, ct);
+                       // Only expired leases: a job still leased may belong to a live node, whatever its id.
+                       var recovered = await store.RecoverAsync(time.UtcNow(), ct);
                        logger.LogInformation("recovered {Count} interrupted jobs", recovered);
                        await LeaseHeartbeat.RegisterAsync(store, o, time, ct);
                        foreach (var seed in recurringSeeds)

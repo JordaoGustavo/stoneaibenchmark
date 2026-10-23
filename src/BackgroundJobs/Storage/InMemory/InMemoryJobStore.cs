@@ -152,13 +152,13 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(false);
     }
 
-    public Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct)
+    public Task<int> RecoverAsync(DateTime now, CancellationToken ct)
     {
         var recovered = 0;
         lock (_lock)
         {
             var stale = _jobs.Values
-                .Where(r => r.State == JobState.Processing && (r.LeaseExpiresAt < now || (ownNodeId != null && r.LockedBy == ownNodeId)))
+                .Where(r => r.State == JobState.Processing && r.LeaseExpiresAt < now)
                 .ToList();
             foreach (var r in stale)
             {
