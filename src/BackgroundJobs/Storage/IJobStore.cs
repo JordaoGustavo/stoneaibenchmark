@@ -13,7 +13,11 @@ public sealed record NewJob(
 /// A job this node just moved to processing, with its open attempt.
 public sealed record ClaimedJob(
     Guid Id, string Name, string ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs,
-    int Version, Guid AttemptId, int Run);
+    int Version, Guid AttemptId, int Run, int RefundedAttempts)
+{
+    /// Attempts that count against MaxAttempts, this one included.
+    public int CountedAttempts => Attempt - RefundedAttempts;
+}
 
 /// Jobs ready to run right now and when the oldest of them became ready.
 public sealed record QueueStats(long Ready, DateTime? OldestReadyAt);
@@ -52,8 +56,8 @@ public static class JobSignalsExtensions
 ///   when an owner is given, is still locked by that node; otherwise it changes nothing and reports false;
 /// - bumps the version, sets updated_at, clears the lock and lease, sets run_at only when entering scheduled;
 /// - entering enqueued sets enqueued_at and takes the next FIFO sequence number;
-/// - <see cref="JobTransition.ResetAttempts"/> sets attempts to 0 and starts a new run;
-/// - <see cref="JobTransition.RefundAttempt"/> decrements attempts (the next claim reuses the attempt number);
+/// - <see cref="JobTransition.ResetAttempts"/> sets attempts and refunded attempts to 0 and starts a new run;
+/// - <see cref="JobTransition.RefundAttempt"/> increments refunded attempts (attempt numbers keep growing);
 /// - clears a pending cancel request;
 /// - appends (To, now, Reason) to the history.
 public interface IJobStore

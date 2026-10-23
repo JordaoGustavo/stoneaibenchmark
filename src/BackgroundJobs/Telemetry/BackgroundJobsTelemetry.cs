@@ -18,7 +18,7 @@ internal sealed class JobsMetrics
     private readonly Histogram<double> _duration;
     private readonly Counter<long> _attempts;
 
-    public JobsMetrics(IMeterFactory meters, QueueMonitor queue)
+    public JobsMetrics(IMeterFactory meters, QueueMonitor queue, AbandonedJobs abandoned)
     {
         var meter = meters.Create(BackgroundJobsTelemetry.Name);
         _duration = meter.CreateHistogram<double>("backgroundjobs.attempt.duration", "s", "Duration of one job attempt");
@@ -30,6 +30,8 @@ internal sealed class JobsMetrics
         meter.CreateObservableGauge("backgroundjobs.queue.oldest_age",
             () => queue.Latest is { } s ? [new Measurement<double>(s.OldestReadyAge.TotalSeconds)] : Array.Empty<Measurement<double>>(),
             "s", "Age of the oldest job in enqueued (0 when empty)");
+        meter.CreateObservableGauge("backgroundjobs.jobs.abandoned", () => (long)abandoned.Snapshot().Count,
+            "{job}", "Jobs still running past their timeout or cancel without a worker");
     }
 
     public void AttemptFinished(string jobName, AttemptOutcome outcome, TimeSpan duration)

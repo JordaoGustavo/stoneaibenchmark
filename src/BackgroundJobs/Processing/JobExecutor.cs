@@ -173,7 +173,7 @@ internal sealed class JobExecutor(
     private static long Ms(TimeSpan t) => (long)t.TotalMilliseconds;
 
     private static DateTime? RetryAt(ClaimedJob job, DateTime finishedAt) =>
-        job.Attempt >= job.MaxAttempts
+        job.CountedAttempts >= job.MaxAttempts
             ? null
             : finishedAt.AddMilliseconds(job.RetryDelayMs + (job.RetryJitterMs > 0 ? Random.Shared.Next(job.RetryJitterMs + 1) : 0));
 }

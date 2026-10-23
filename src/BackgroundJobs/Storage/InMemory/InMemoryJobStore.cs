@@ -37,7 +37,7 @@ internal sealed class InMemoryJobStore : IJobStore
             return Task.FromResult<Job?>(new Job(
                 r.Id, r.Name, JsonDocument.Parse(r.ArgsJson).RootElement.Clone(), r.ArgsVersion, r.State, r.Attempts, r.MaxAttempts,
                 TimeSpan.FromMilliseconds(r.RetryDelayMs), r.State == JobState.Scheduled ? r.RunAt : null, r.CreatedAt, r.UpdatedAt,
-                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList()));
+                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts));
         }
     }
 
@@ -94,7 +94,7 @@ internal sealed class InMemoryJobStore : IJobStore
                 var attempt = new AttemptRow(Guid.CreateVersion7(), r.Run, r.Attempts, now);
                 r.AttemptLog.Add(attempt);
                 return new ClaimedJob(r.Id, r.Name, r.ArgsJson, r.ArgsVersion, r.Attempts, r.MaxAttempts, r.RetryDelayMs,
-                    r.RetryJitterMs, r.Version, attempt.Id, r.Run);
+                    r.RetryJitterMs, r.Version, attempt.Id, r.Run, r.RefundedAttempts);
             }).ToList();
             return Task.FromResult(claimed);
         }
@@ -155,7 +155,7 @@ internal sealed class InMemoryJobStore : IJobStore
                 var cancel = r.CancelRequestedAt != null;
                 foreach (var a in r.AttemptLog.Where(a => a.Run == r.Run && a.FinishedAt == null))
                     a.Close(now, cancel ? AttemptOutcome.Cancelled : AttemptOutcome.Interrupted, null);
-                var transition = cancel ? JobTransition.Cancel : JobTransition.Recover(r.Attempts, r.MaxAttempts);
+                var transition = cancel ? JobTransition.Cancel : JobTransition.Recover(r.Attempts - r.RefundedAttempts, r.MaxAttempts);
                 if (Apply(r, transition, r.Version, null, now)) recovered++;
             }
         }
@@ -200,8 +200,8 @@ internal sealed class InMemoryJobStore : IJobStore
         r.LockedBy = null;
         r.LeaseExpiresAt = null;
         r.CancelRequestedAt = null;
-        if (t.ResetAttempts) { r.Attempts = 0; r.Run++; }
-        else if (t.RefundAttempt) r.Attempts--;
+        if (t.ResetAttempts) { r.Attempts = 0; r.RefundedAttempts = 0; r.Run++; }
+        else if (t.RefundAttempt) r.RefundedAttempts++;
         Enter(r, t, now, runAt);
         return true;
     }
@@ -229,6 +229,7 @@ internal sealed class InMemoryJobStore : IJobStore
         public int ArgsVersion { get; init; }
         public JobState State { get; set; }
         public int Attempts { get; set; }
+        public int RefundedAttempts { get; set; }
         public int MaxAttempts { get; init; }
         public int RetryDelayMs { get; init; }
         public int RetryJitterMs { get; init; }

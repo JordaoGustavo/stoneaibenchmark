@@ -7,6 +7,7 @@ namespace BackgroundJobs.Processing;
 internal sealed class Dispatcher(
     IJobStore store,
     JobExecutor executor,
+    AbandonedJobs abandonedJobs,
     JobCircuitBreaker jobBreaker,
     StoreCircuitBreaker storeBreaker,
     Signals signals,
@@ -15,12 +16,12 @@ internal sealed class Dispatcher(
 {
     private readonly Dictionary<Guid, Task> _running = [];
     private readonly Lock _lock = new();
-    private int _abandoned;
 
     public IReadOnlyCollection<Guid> RunningIds()
     {
         lock (_lock) return _running.Keys.ToList();
     }
+
 
     /// Returns after <paramref name="ct"/> is cancelled and every running job has finished.
     public async Task RunAsync(CancellationToken ct)
@@ -64,7 +65,7 @@ internal sealed class Dispatcher(
                             lock (_lock)
                             {
                                 _running.Remove(job.Id);
-                                if (abandoned) _abandoned--;
+                                if (abandoned) abandonedJobs.Remove(job.Id);
                             }
                             if (!abandoned) slots.Release();
                             signals.Dispatcher.Set();
@@ -77,9 +78,9 @@ internal sealed class Dispatcher(
                     {
                         lock (_lock)
                         {
-                            if (abandoned || _abandoned >= o.MaxAbandonedJobs) return false;
+                            if (abandoned || !abandonedJobs.TryAdd(new AbandonedJob(job.Id, job.Name, time.GetUtcNow()), o.MaxAbandonedJobs))
+                                return false;
                             abandoned = true;
-                            _abandoned++;
                         }
                         slots.Release();
                         signals.Dispatcher.Set();

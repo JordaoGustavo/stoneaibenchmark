@@ -67,7 +67,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             row.CreatedAt, row.UpdatedAt,
             history.Select(h => new JobHistoryEntry(JobStateWire.ParseState(h.State), h.At, h.Reason)).ToList(),
             attempts.Select(a => new JobAttempt(a.Attempt, a.StartedAt, a.FinishedAt,
-                a.Outcome == null ? null : JobStateWire.ParseOutcome(a.Outcome), a.Error)).ToList());
+                a.Outcome == null ? null : JobStateWire.ParseOutcome(a.Outcome), a.Error)).ToList(),
+            row.RefundedAttempts);
     }
 
     public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct)
@@ -134,7 +135,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 SELECT id, @to, @now, @reason FROM claimed
             )
             SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
-                   version, attempt_id, run
+                   version, attempt_id, run, refunded_attempts
             FROM claimed
             ORDER BY enqueued_at, enqueue_seq
             """,
@@ -200,7 +201,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var stale = (await conn.QueryAsync<StaleRow>("""
-            SELECT id, version, run, attempts, max_attempts, cancel_requested_at IS NOT NULL AS cancel_requested FROM bj_jobs
+            SELECT id, version, run, attempts - refunded_attempts AS attempts, max_attempts, cancel_requested_at IS NOT NULL AS cancel_requested FROM bj_jobs
             WHERE state = 'processing' AND (lease_expires_at < @now OR locked_by = @ownNodeId)
             FOR UPDATE SKIP LOCKED
             """, new { now, ownNodeId }, tx)).ToList();
@@ -239,7 +240,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 run_at = CASE WHEN @to = 'scheduled' THEN @runAt::timestamptz END,
                 enqueued_at = CASE WHEN @to = 'enqueued' THEN @now ELSE enqueued_at END,
                 enqueue_seq = CASE WHEN @to = 'enqueued' THEN nextval('bj_enqueue_seq') ELSE enqueue_seq END,
-                attempts = CASE WHEN @resetAttempts THEN 0 WHEN @refundAttempt THEN attempts - 1 ELSE attempts END,
+                attempts = CASE WHEN @resetAttempts THEN 0 ELSE attempts END,
+                refunded_attempts = CASE WHEN @resetAttempts THEN 0 WHEN @refundAttempt THEN refunded_attempts + 1 ELSE refunded_attempts END,
                 run = CASE WHEN @resetAttempts THEN run + 1 ELSE run END,
                 locked_by = NULL, lease_expires_at = NULL, cancel_requested_at = NULL
             WHERE id = @id AND version = @version AND state = ANY(@from)
@@ -293,6 +295,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public int ArgsVersion { get; set; }
         public string State { get; set; } = "";
         public int Attempts { get; set; }
+        public int RefundedAttempts { get; set; }
         public int MaxAttempts { get; set; }
         public int RetryDelayMs { get; set; }
         public DateTime? RunAt { get; set; }

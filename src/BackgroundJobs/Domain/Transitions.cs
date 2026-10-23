@@ -19,7 +19,7 @@ public static class Reasons
 
 /// One move of the job state machine: the states it may start from, where it goes and the history reason it records.
 /// This is the only place the rules live; stores apply them (see IJobStore for the mechanics every store shares).
-/// <param name="RefundAttempt">The attempt just made does not count against MaxAttempts.</param>
+/// <param name="RefundAttempt">The attempt just made does not count against MaxAttempts (it keeps its number).</param>
 public sealed record JobTransition(
     string Operation, IReadOnlyList<JobState> From, JobState To, string Reason, bool ResetAttempts = false, bool RefundAttempt = false)
 {
@@ -40,6 +40,7 @@ public sealed record JobTransition(
         : new("fail", [JobState.Processing], JobState.Failed, Reasons.MaxAttemptsExhausted);
 
     /// An interrupted attempt counts against the budget: run again if any is left, otherwise fail.
+    /// <paramref name="attempts"/> are the counted ones: attempts minus refunded attempts.
     public static JobTransition Recover(int attempts, int maxAttempts) => attempts >= maxAttempts
         ? new("recover", [JobState.Processing], JobState.Failed, Reasons.MaxAttemptsExhausted)
         : new("recover", [JobState.Processing], JobState.Enqueued, Reasons.RecoveredAfterCrash);

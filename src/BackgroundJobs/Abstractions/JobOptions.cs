@@ -48,6 +48,10 @@ public sealed class BackgroundJobsOptions
     /// Bounds the threads a pile of stuck jobs can take: at most WorkerCount + MaxAbandonedJobs jobs run at once.
     public int MaxAbandonedJobs { get; set; } = 4;
 
+    /// The health check reports degraded once a job has run without its worker for longer than this. A job whose code
+    /// never returns stays processing for good, so this is how it gets noticed.
+    public TimeSpan AbandonedJobAlertAfter { get; set; } = TimeSpan.FromMinutes(5);
+
     /// When the server stops, how long running jobs are waited for after their token fired. Jobs still running then are
     /// recorded as interrupted and requeued (their attempt given back), and the server stops. Infinite by default.
     public TimeSpan ShutdownTimeout { get; set; } = Timeout.InfiniteTimeSpan;
@@ -86,6 +90,7 @@ public sealed class BackgroundJobsOptions
             throw new ArgumentException("DefaultJobTimeout must be positive or Timeout.InfiniteTimeSpan");
         if (TimeoutGracePeriod < TimeSpan.Zero) throw new ArgumentException("TimeoutGracePeriod must not be negative");
         if (MaxAbandonedJobs < 0) throw new ArgumentException("MaxAbandonedJobs must not be negative");
+        if (AbandonedJobAlertAfter < TimeSpan.Zero) throw new ArgumentException("AbandonedJobAlertAfter must not be negative");
         if (ShutdownTimeout < TimeSpan.Zero && ShutdownTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentException("ShutdownTimeout must not be negative, or Timeout.InfiniteTimeSpan");
         if (SchedulerMaxWait <= TimeSpan.Zero) throw new ArgumentException("SchedulerMaxWait must be positive");

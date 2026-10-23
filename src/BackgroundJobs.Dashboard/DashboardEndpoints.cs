@@ -160,12 +160,14 @@ public static class DashboardEndpoints
             // The answer to "why is this failed?" goes first, not at the bottom of a timeline.
             var last = job.AttemptHistory.LastOrDefault();
             if (job.State == JobState.Failed && last?.Error != null)
-                body.Append("<div class=\"callout\"><b>Failed after ").Append(job.Attempts).Append(job.Attempts == 1 ? " attempt" : " attempts")
+                body.Append("<div class=\"callout\"><b>Failed after ").Append(job.Attempts - job.RefundedAttempts).Append(job.Attempts - job.RefundedAttempts == 1 ? " attempt" : " attempts")
                     .Append("</b> <span class=\"muted\">").Append(Ago(last.FinishedAt ?? last.StartedAt, now, tz)).Append("</span><pre>")
                     .Append(E(last.Error)).Append("</pre></div>");
 
             body.Append("<div class=\"card meta\"><dl>")
-                .Append(Meta("Attempts", $"{job.Attempts} of {job.MaxAttempts}"))
+                .Append(Meta("Attempts", job.RefundedAttempts == 0
+                    ? $"{job.Attempts - job.RefundedAttempts} of {job.MaxAttempts}"
+                    : $"{job.Attempts - job.RefundedAttempts} of {job.MaxAttempts} (+{job.RefundedAttempts} interrupted by shutdown)"))
                 .Append(Meta("Retry delay", Duration(job.RetryDelay)))
                 .Append(Meta("Runs", runs.Count.ToString()))
                 .Append(Meta("Created", Local(job.CreatedAt, tz, now)))

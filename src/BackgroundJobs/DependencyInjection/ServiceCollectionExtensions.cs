@@ -52,6 +52,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<StoreCircuitBreaker>();
         services.AddSingleton<JobCircuitBreaker>();
         services.AddSingleton<CancelRequests>();
+        services.AddSingleton<AbandonedJobs>();
         services.AddSingleton<JobExecutor>();
         services.AddSingleton<Dispatcher>();
         services.AddSingleton<Scheduler>();
@@ -64,7 +65,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<JobServer>());
         services.AddSingleton(sp => new JobServerHealthCheck(
             sp.GetRequiredService<JobServer>(), sp.GetRequiredService<JobCircuitBreaker>(), sp.GetRequiredService<QueueMonitor>(),
-            sp.GetRequiredService<IOptions<BackgroundJobsOptions>>(), sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<AbandonedJobs>(), sp.GetRequiredService<IOptions<BackgroundJobsOptions>>(), sp.GetRequiredService<TimeProvider>()));
         return new BackgroundJobsBuilder(services);
     }
 

@@ -72,5 +72,5 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
 - Retenção: `RETENTION_SECONDS` (padrão 7 dias; `forever` mantém tudo) `RETENTION_SWEEP_MS` (padrão 60000) e `RETENTION_BATCH` (padrão 1000) controlam a limpeza de jobs finalizados.
 - `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`; acima de 1000 jobs é preciso seguir o cursor.
 - Um `SIGTERM` cancela o token dos jobs e espera os que o ignoram terminarem, sem limite, a menos que `SHUTDOWN_TIMEOUT_MS` seja definido.
-- Timeout: `JOB_TIMEOUT_MS` (padrão global), `SLEEP_TIMEOUT_MS` (só o job `sleep`) e `TIMEOUT_GRACE_MS` (padrão 5000), `MAX_ABANDONED_JOBS` (padrão 4) e `LEASE_MS` (padrão 30000; o cancelamento chega a outro nó em até um terço disso). O job `sleep`
+- Timeout: `JOB_TIMEOUT_MS` (padrão global), `SLEEP_TIMEOUT_MS` (só o job `sleep`) e `TIMEOUT_GRACE_MS` (padrão 5000), `MAX_ABANDONED_JOBS` (padrão 4), `ABANDONED_ALERT_MS` (padrão 300000) e `LEASE_MS` (padrão 30000; o cancelamento chega a outro nó em até um terço disso). O job `sleep`
   (`{"delayMs":..., "ignoreCancellation": false}`) espera honrando o token, ou ignorando-o com `ignoreCancellation: true`.

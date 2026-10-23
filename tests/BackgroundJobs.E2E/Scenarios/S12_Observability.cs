@@ -14,7 +14,8 @@ public sealed class S12_Observability(PostgresFixture pg)
     private static async Task<JsonObject> GetJsonAsync(DemoProcess demo, string path)
     {
         using var http = new HttpClient { BaseAddress = demo.Api.BaseAddress };
-        return (await http.GetFromJsonAsync<JsonObject>(path))!;
+        // Any status: /health/details answers 503 with a body when unhealthy.
+        return (await (await http.GetAsync(path)).Content.ReadFromJsonAsync<JsonObject>())!;
     }
 
     private static async Task<JsonObject> WaitForJsonAsync(DemoProcess demo, string path, Func<JsonObject, bool> until)
@@ -187,5 +188,32 @@ public sealed class S12_Observability(PostgresFixture pg)
         var body = (await res.Content.ReadFromJsonAsync<JsonObject>())!;
         Assert.Equal("unhealthy", body["status"]!.GetValue<string>());
         Assert.False(body["ready"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Health_details_reports_jobs_running_without_a_worker()
+    {
+        await using var demo = await DemoProcess.StartAsync(null, workers: 1, env: Env(
+            ("JOB_TIMEOUT_MS", "300"), ("TIMEOUT_GRACE_MS", "200"), ("MAX_ABANDONED_JOBS", "2"), ("ABANDONED_ALERT_MS", "1500")));
+
+        var first = await demo.Api.EnqueueAsync("sleep", new { delayMs = 6000, ignoreCancellation = true });
+        var abandoned = await WaitForJsonAsync(demo, "/health/details", h => h["abandoned"]!["count"]!.GetValue<int>() == 1);
+        // Freshly abandoned: reported, but not yet alarming.
+        Assert.Equal("healthy", abandoned["status"]!.GetValue<string>());
+        Assert.Equal(first, abandoned["abandoned"]!["jobs"]![0]!["id"]!.GetValue<string>());
+        Assert.Equal("sleep", abandoned["abandoned"]!["jobs"]![0]!["name"]!.GetValue<string>());
+
+        var old = await WaitForJsonAsync(demo, "/health/details", h => h["status"]!.GetValue<string>() == "degraded");
+        Assert.True(old["abandoned"]!["alert"]!.GetValue<bool>());
+
+        // At the limit the node is about to lose workers for good: unhealthy, while readiness stays up.
+        var second = await demo.Api.EnqueueAsync("sleep", new { delayMs = 6000, ignoreCancellation = true });
+        var full = await WaitForJsonAsync(demo, "/health/details", h => h["abandoned"]!["full"]!.GetValue<bool>());
+        Assert.Equal("unhealthy", full["status"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK, (await demo.Api.GetHealthAsync()).StatusCode);
+
+        await demo.Api.WaitForStateAsync(first, "succeeded", TimeSpan.FromSeconds(10));
+        await demo.Api.WaitForStateAsync(second, "succeeded", TimeSpan.FromSeconds(10));
+        await WaitForJsonAsync(demo, "/health/details", h => h["status"]!.GetValue<string>() == "healthy");
     }
 }

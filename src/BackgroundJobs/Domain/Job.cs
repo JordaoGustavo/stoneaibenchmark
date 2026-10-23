@@ -11,6 +11,7 @@ public sealed record Job(
     /// The args version the job was enqueued with; see JobRegistrationOptions.ArgsVersion.
     int ArgsVersion,
     JobState State,
+    /// Executions so far in the current run; each attempt has its own number.
     int Attempts,
     int MaxAttempts,
     TimeSpan RetryDelay,
@@ -18,7 +19,9 @@ public sealed record Job(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<JobHistoryEntry> History,
-    IReadOnlyList<JobAttempt> AttemptHistory);
+    IReadOnlyList<JobAttempt> AttemptHistory,
+    /// Attempts of the current run given back because a server stopped; Attempts - RefundedAttempts counts against MaxAttempts.
+    int RefundedAttempts = 0);
 
 public sealed record JobHistoryEntry(JobState State, DateTime At, string Reason);
 

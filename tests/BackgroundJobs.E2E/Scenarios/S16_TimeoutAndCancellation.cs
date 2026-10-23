@@ -97,8 +97,9 @@ public sealed class S16_TimeoutAndCancellation(PostgresFixture pg)
         await using var restarted = await DemoProcess.StartAsync(db, workers: 1, env: new Dictionary<string, string> { ["NODE_ID"] = "other-node" });
         var job = await restarted.Api.WaitForStateAsync(id, "succeeded", TimeSpan.FromSeconds(10));
         Assert.Equal(["interrupted", "succeeded"], job.AttemptHistory.Select(a => a.Outcome));
-        Assert.Equal([1, 1], job.AttemptHistory.Select(a => a.Attempt));
-        Assert.Equal(1, job.Attempts);
+        // Each execution keeps its own number; with maxAttempts 1, the second only ran because the first was given back.
+        Assert.Equal([1, 2], job.AttemptHistory.Select(a => a.Attempt));
+        Assert.Contains("1 of 1 (+1 interrupted by shutdown)", await (await restarted.Api.GetRawAsync($"/jobs/{id}")).Content.ReadAsStringAsync());
         Assert.Contains(job.History, h => h.Reason == "interrupted_by_shutdown");
         Assert.DoesNotContain(job.History, h => h.Reason == "recovered_after_crash");
     }
@@ -123,7 +124,7 @@ public sealed class S16_TimeoutAndCancellation(PostgresFixture pg)
         var job = await restarted.Api.GetJobAsync(id);
         Assert.Equal("interrupted", job.AttemptHistory[0].Outcome);
         Assert.Equal(1, job.AttemptHistory[0].Attempt);
-        Assert.True(job.Attempts <= 1, $"attempts {job.Attempts}: the given-up attempt must be refunded");
+        Assert.Contains("(+1 interrupted by shutdown)", await (await restarted.Api.GetRawAsync($"/jobs/{id}")).Content.ReadAsStringAsync());
         Assert.Contains(job.History, h => h.Reason == "interrupted_by_shutdown");
         Assert.Contains(job.State, new[] { "enqueued", "processing" });
     }

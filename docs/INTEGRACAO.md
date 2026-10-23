@@ -104,8 +104,8 @@ public sealed record JobContext(Guid JobId, int Attempt, CancellationToken Cance
 - **`context.CancellationToken`** dispara quando a tentativa estoura o timeout, quando um usuário cancela o job ou quando o servidor está parando. Repasse-o para `HttpClient`, EF, `Task.Delay` etc. O cancelamento é cooperativo:
   - **Timeout** (`DefaultJobTimeout` ou `JobRegistrationOptions.Timeout`): se o job parar (com qualquer exceção), a tentativa falha com erro `timed out after N ms` e segue a política de retry.
   - **Cancelamento** (`IJobClient.CancelAsync`, `POST /api/jobs/{id}/cancel`, botão no dashboard): o job termina em `cancelled`, sem retry — também se a tentativa falhar, estourar o timeout ou for interrompida antes de o pedido chegar ao nó. Só um sucesso prevalece sobre o pedido.
-  - **Job que ignora o token** (timeout ou cancelamento): depois de `TimeoutGracePeriod` o worker é liberado para outros jobs, mas o job **continua em `processing`**, com o lease renovado, até o código voltar; aí o resultado real é registrado (inclusive sucesso). Como o job não sai de `processing`, nenhum retry roda em paralelo, em nenhum nó. No máximo `MaxAbandonedJobs` jobs ficam assim; além disso, o job segura o worker. **Um job que nunca volta fica em `processing` para sempre** e ocupa uma dessas vagas; com as vagas esgotadas, os próximos jobs travados seguram workers. Fique de olho em jobs há muito tempo em `processing` e no log `ignored its cancellation`.
-  - **Parada do servidor:** se o job parar, a tentativa vira `interrupted` e o job volta para `enqueued` na hora (`interrupted_by_shutdown`), sem esperar o lease e **sem gastar tentativa**: a próxima execução reusa o mesmo número de tentativa. Jobs que ignoram o token são esperados até `ShutdownTimeout` (infinito por padrão); depois são registrados do mesmo jeito e o processo encerra.
+  - **Job que ignora o token** (timeout ou cancelamento): depois de `TimeoutGracePeriod` o worker é liberado para outros jobs, mas o job **continua em `processing`**, com o lease renovado, até o código voltar; aí o resultado real é registrado (inclusive sucesso). Como o job não sai de `processing`, nenhum retry roda em paralelo, em nenhum nó. No máximo `MaxAbandonedJobs` jobs ficam assim; além disso, o job segura o worker. **Um job que nunca volta fica em `processing` para sempre** e ocupa uma dessas vagas; com as vagas esgotadas, os próximos jobs travados seguram workers. O [health check](#10-health-check-e-observabilidade) avisa: `degraded` quando um job está assim há mais que `AbandonedJobAlertAfter` (padrão 5 min), `unhealthy` quando as vagas acabam (reiniciar o processo as libera). A métrica `backgroundjobs.jobs.abandoned` conta esses jobs.
+  - **Parada do servidor:** se o job parar, a tentativa vira `interrupted` e o job volta para `enqueued` na hora (`interrupted_by_shutdown`), sem esperar o lease e **sem gastar tentativa**: a tentativa conta em `Job.RefundedAttempts` e o orçamento é `Attempts - RefundedAttempts`. Cada execução mantém seu próprio número (1, 2, 3…), então `context.Attempt` nunca se repete. Pela API HTTP, as tentativas devolvidas são as entradas `interrupted_by_shutdown` do histórico; o dashboard mostra "1 of 1 (+1 interrupted by shutdown)". Jobs que ignoram o token são esperados até `ShutdownTimeout` (infinito por padrão); depois são registrados do mesmo jeito e o processo encerra.
 
   ```csharp
   jobs.Register<ReportJob, ReportArgs>("report", o => o.Timeout = TimeSpan.FromMinutes(2));
@@ -236,6 +236,7 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `DefaultJobTimeout` | `Timeout.InfiniteTimeSpan` | Tempo máximo de uma tentativa; `JobRegistrationOptions.Timeout` sobrescreve por tipo |
 | `TimeoutGracePeriod` | `5s` | Após timeout ou cancelamento, quanto um job que ignora o token segura o worker |
 | `MaxAbandonedJobs` | `4` | Máximo de jobs rodando sem worker depois da folga; acima disso seguram o worker |
+| `AbandonedJobAlertAfter` | `5min` | Health check `degraded` quando um job roda sem worker há mais que isso |
 | `ShutdownTimeout` | `Timeout.InfiniteTimeSpan` | Na parada, quanto esperar jobs que ignoram o token antes de devolvê-los à fila e encerrar |
 
 Configuração inválida lança `ArgumentException` ao iniciar o host.
@@ -392,8 +393,8 @@ app.MapBackgroundJobsDashboard().RequireAuthorization("admin");
 
 `JobServerHealthCheck` (registrado automaticamente):
 
-- **Unhealthy** fora do intervalo "migrou/recuperou" → "pedido de parada".
-- **Degraded** quando a fila está parada (algum job em `enqueued` há mais que `StalledQueueThreshold`, padrão 60 s) ou algum circuit breaker de job está `open` (`half-open` não degrada: já deixa passar um job de teste).
+- **Unhealthy** fora do intervalo "migrou/recuperou" → "pedido de parada", ou quando `MaxAbandonedJobs` jobs rodam sem worker (o próximo job travado vai segurar um worker de vez). `/health` (readiness) continua `200` nesse caso.
+- **Degraded** quando a fila está parada (algum job em `enqueued` há mais que `StalledQueueThreshold`, padrão 60 s) ou algum circuit breaker de job está `open` (`half-open` não degrada: já deixa passar um job de teste), ou algum job roda sem worker há mais que `AbandonedJobAlertAfter`. `/health/details` lista esses jobs em `abandoned` (`count`, `limit`, `full`, `alert`, `jobs[]` com `id`, `name`, `since`, `ageSeconds`).
 - **Healthy** caso contrário. O `data` do resultado traz `ready`, `queue.*` e o estado de cada breaker.
 
 ```csharp
@@ -432,8 +433,9 @@ builder.Services.AddOpenTelemetry()
 | `backgroundjobs.attempts` | counter | `{attempt}` | `job.name`, `outcome` (`succeeded`/`failed`) — taxa de falha = `failed / total` |
 | `backgroundjobs.queue.depth` | gauge | `{job}` | — jobs em `enqueued` |
 | `backgroundjobs.queue.oldest_age` | gauge | `s` | — idade do job mais antigo em `enqueued` (0 se vazia) |
+| `backgroundjobs.jobs.abandoned` | gauge | `{job}` | — jobs rodando além do timeout/cancelamento sem worker **neste nó** |
 
-Os gauges vêm da mesma amostra do health check e são globais ao banco (todos os nós reportam o mesmo valor).
+Os gauges da fila vêm da mesma amostra do health check e são globais ao banco (todos os nós reportam o mesmo valor). `backgroundjobs.jobs.abandoned` é a exceção: é por processo, então some entre nós.
 
 ### Logs estruturados
 

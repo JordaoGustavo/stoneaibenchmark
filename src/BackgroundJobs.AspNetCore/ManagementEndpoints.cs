@@ -37,6 +37,15 @@ public static class ManagementEndpoints
                 {
                     job = b.Job, state = b.State, consecutiveFailures = b.ConsecutiveFailures, openUntil = b.OpenUntil?.UtcDateTime,
                 }),
+                abandoned = new
+                {
+                    count = r.Abandoned.Jobs.Count,
+                    limit = r.Abandoned.Limit,
+                    full = r.Abandoned.Full,
+                    alert = r.Abandoned.Alert,
+                    alertAfterSeconds = r.Abandoned.AlertAfter.TotalSeconds,
+                    jobs = r.Abandoned.Jobs.Select(j => new { id = j.Id.ToString(), name = j.Name, since = j.Since.UtcDateTime, ageSeconds = j.Age.TotalSeconds }),
+                },
             }, statusCode: r.Status == HealthStatus.Unhealthy ? StatusCodes.Status503ServiceUnavailable : StatusCodes.Status200OK);
         });
 
