@@ -70,7 +70,7 @@ public static class ManagementEndpoints
             }
             var pageSize = limit ?? 1000;
             if (pageSize is < 1 or > 1000) return Error(400, "limit must be between 1 and 1000");
-            var page = await client.ListAsync(cursor, pageSize, ct);
+            var page = await client.ListAsync(cursor, pageSize, ct: ct);
             return Results.Ok(new
             {
                 items = page.Select(j => new { id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts, queue = j.Queue, priority = j.Priority }),

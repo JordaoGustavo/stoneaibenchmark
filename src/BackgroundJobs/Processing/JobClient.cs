@@ -33,10 +33,10 @@ internal sealed class JobClient(
     public async Task<Job> GetAsync(Guid id, CancellationToken ct = default) =>
         await store.GetAsync(id, ct) ?? throw new JobNotFoundException(id);
 
-    public Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, CancellationToken ct = default)
+    public Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default)
     {
         if (limit is < 1 or > MaxPageSize) throw new ArgumentException($"limit must be between 1 and {MaxPageSize}");
-        return store.ListAsync(after, limit, ct);
+        return store.ListAsync(after, limit, descending, ct);
     }
 
     public Task DeleteAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Delete, ct);

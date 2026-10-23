@@ -106,8 +106,9 @@ public interface IJobStore
     Task<Guid> InsertAsync(NewJob job, CancellationToken ct);
     Task<Job?> GetAsync(Guid id, CancellationToken ct);
 
-    /// Ascending by id. For UUIDv7 ids that is creation order, and the order of their text form.
-    Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct);
+    /// By id, ascending unless <paramref name="descending"/>; <paramref name="after"/> is the last id seen in that direction.
+    /// For UUIDv7 ids that is creation order, and the order of their text form.
+    Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, bool descending, CancellationToken ct);
 
     /// Earliest run_at among scheduled jobs, or null when none.
     Task<DateTime?> NextRunAtAsync(CancellationToken ct);

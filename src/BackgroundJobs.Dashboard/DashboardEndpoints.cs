@@ -49,7 +49,7 @@ public static class DashboardEndpoints
             return Results.Redirect(safe && !back.StartsWith("//") && back.Length > 0 ? back : (basePath.Length == 0 ? "/" : basePath));
         });
 
-        group.MapGet("/", async (HttpContext http, IJobClient client, string? state, string? after, string? refresh, string? msg, CancellationToken ct) =>
+        group.MapGet("/", async (HttpContext http, IJobClient client, string? state, string? after, string? dir, string? refresh, string? msg, CancellationToken ct) =>
         {
             JobState? filter = null;
             if (!string.IsNullOrEmpty(state))
@@ -59,24 +59,25 @@ public static class DashboardEndpoints
             }
             Guid? cursor = Guid.TryParse(after, out var a) ? a : null;
             var autoRefresh = refresh != "off";
+            var desc = dir != "asc";
 
-            var (items, next) = await ScanAsync(client, filter, cursor, ct);
+            var (items, next) = await ScanAsync(client, filter, cursor, desc, ct);
             var tz = Zone(http);
             var now = DateTime.UtcNow;
             var body = new StringBuilder();
             body.Append("<div class=\"head\"><div><h1>Jobs</h1><p class=\"muted\">")
                 .Append(filter is null ? "All jobs" : $"Jobs in state <b>{filter.Value.ToWire()}</b>")
-                .Append(", oldest first.</p></div>")
-                .Append("<div class=\"actions\">").Append(RefreshToggle(basePath, filter, cursor, autoRefresh))
+                .Append(desc ? ", newest first." : ", oldest first.").Append("</p></div>")
+                .Append("<div class=\"actions\">").Append(RefreshToggle(basePath, filter, cursor, desc, autoRefresh))
                 .Append("<a class=\"btn\" href=\"").Append(basePath).Append("/new\">Trigger job</a></div>")
                 .Append("</div>");
             if (!string.IsNullOrEmpty(msg)) body.Append(Alert(msg, info: true));
 
-            body.Append("<nav class=\"tabs\">").Append(Tab(basePath, null, filter, autoRefresh));
-            foreach (var s in Enum.GetValues<JobState>()) body.Append(Tab(basePath, s, filter, autoRefresh));
+            body.Append("<nav class=\"tabs\">").Append(Tab(basePath, null, filter, desc, autoRefresh));
+            foreach (var s in Enum.GetValues<JobState>()) body.Append(Tab(basePath, s, filter, desc, autoRefresh));
             body.Append("</nav>");
 
-            body.Append("<div class=\"card\"><table><thead><tr><th>Name</th><th>State</th><th class=\"num\">Attempts</th><th>Created</th><th>Updated</th><th>Id</th></tr></thead><tbody>");
+            body.Append("<div class=\"card\"><table><thead><tr><th>Name</th><th>State</th><th class=\"num\">Attempts</th><th>").Append(SortHeader(basePath, filter, desc, autoRefresh)).Append("</th><th>Updated</th><th>Id</th></tr></thead><tbody>");
             if (items.Count == 0) body.Append("<tr><td colspan=\"6\" class=\"empty\">No jobs found.</td></tr>");
             foreach (var j in items)
             {
@@ -88,8 +89,8 @@ public static class DashboardEndpoints
                     .Append("</td><td class=\"mono muted id\">").Append(j.Id.ToString()[..8]).Append("</td></tr>");
             }
             body.Append("</tbody></table></div><div class=\"pager\">");
-            if (cursor != null) body.Append("<a class=\"btn outline\" href=\"").Append(ListUrl(basePath, filter, null, autoRefresh)).Append("\">First page</a>");
-            if (next != null) body.Append("<a class=\"btn outline\" href=\"").Append(ListUrl(basePath, filter, next, autoRefresh)).Append("\">Next page</a>");
+            if (cursor != null) body.Append("<a class=\"btn outline\" href=\"").Append(ListUrl(basePath, filter, null, desc, autoRefresh)).Append("\">First page</a>");
+            if (next != null) body.Append("<a class=\"btn outline\" href=\"").Append(ListUrl(basePath, filter, next, desc, autoRefresh)).Append("\">Next page</a>");
             body.Append("</div>");
 
             return Page(http, 200, "Jobs", body.ToString(), basePath, autoRefresh);
@@ -123,8 +124,9 @@ public static class DashboardEndpoints
 
             var form = await http.Request.ReadFormAsync(ct);
             var errors = new List<string>();
-            var args = DashboardForms.Parse(reg.ArgsType, form, errors);
-            var options = ParseOptions(form, errors);
+            var tz = Zone(http);
+            var args = DashboardForms.Parse(reg.ArgsType, form, tz, errors);
+            var options = ParseOptions(form, tz, errors);
             if (errors.Count > 0) return TriggerPage(http, basePath, registry, name, form, errors);
 
             Guid id;
@@ -198,14 +200,14 @@ public static class DashboardEndpoints
     }
 
     /// Walks the id-ordered list until a page of matches is filled; the store has no state index to filter on.
-    private static async Task<(List<JobSummary> Items, Guid? Next)> ScanAsync(IJobClient client, JobState? filter, Guid? after, CancellationToken ct)
+    private static async Task<(List<JobSummary> Items, Guid? Next)> ScanAsync(IJobClient client, JobState? filter, Guid? after, bool descending, CancellationToken ct)
     {
         var items = new List<JobSummary>();
         var scanned = 0;
         var cursor = after;
         while (scanned < MaxScannedPerPage)
         {
-            var batch = await client.ListAsync(cursor, ScanBatch, ct);
+            var batch = await client.ListAsync(cursor, ScanBatch, descending, ct);
             foreach (var j in batch)
             {
                 cursor = j.Id;
@@ -247,9 +249,9 @@ public static class DashboardEndpoints
             body.Append("<div class=\"alert\"><b>Could not enqueue</b><ul>").Append(string.Concat(errors.Select(e => $"<li>{E(e)}</li>"))).Append("</ul></div>");
 
         body.Append("<form class=\"card pad form\" method=\"post\" action=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append("\">")
-            .Append("<fieldset><legend>Arguments</legend>").Append(DashboardForms.Render(argsType, posted)).Append("</fieldset>")
+            .Append("<fieldset><legend>Arguments</legend>").Append(DashboardForms.Render(argsType, posted, Zone(http))).Append("</fieldset>")
             .Append("<details class=\"opts\"><summary>Options</summary><p class=\"muted\">Leave blank to use the server defaults.</p><div class=\"row\">")
-            .Append("<div class=\"field\"><label for=\"o-runAt\">Run at <span class=\"muted\">(UTC)</span></label><input type=\"datetime-local\" step=\"1\" id=\"o-runAt\" name=\"opt.runAt\" value=\"").Append(Posted("opt.runAt")).Append("\"></div>")
+            .Append("<div class=\"field\"><label for=\"o-runAt\">Run at <span class=\"muted\">(").Append(E(DashboardForms.ZoneLabel(Zone(http)))).Append(")</span></label><input type=\"datetime-local\" step=\"1\" id=\"o-runAt\" name=\"opt.runAt\" value=\"").Append(Posted("opt.runAt")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-max\">Max attempts</label><input type=\"number\" min=\"1\" step=\"1\" id=\"o-max\" name=\"opt.maxAttempts\" value=\"").Append(Posted("opt.maxAttempts")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-delay\">Retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-delay\" name=\"opt.retryDelayMs\" value=\"").Append(Posted("opt.retryDelayMs")).Append("\"></div>")
             .Append("</div></details><div class=\"actions end\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
@@ -257,7 +259,7 @@ public static class DashboardEndpoints
         return Page(http, errors.Count > 0 ? 400 : 200, name, body.ToString(), basePath);
     }
 
-    private static JobOptions? ParseOptions(IFormCollection form, List<string> errors)
+    private static JobOptions? ParseOptions(IFormCollection form, TimeZoneInfo tz, List<string> errors)
     {
         string? Get(string key) => form[key].LastOrDefault() is { Length: > 0 } v ? v.Trim() : null;
         DateTimeOffset? runAt = null;
@@ -265,8 +267,12 @@ public static class DashboardEndpoints
         TimeSpan? retryDelay = null;
         if (Get("opt.runAt") is { } r)
         {
-            if (DateTime.TryParse(r, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var d)) runAt = new DateTimeOffset(d, TimeSpan.Zero);
-            else errors.Add("Run at: a date and time expected.");
+            if (!DateTime.TryParse(r, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) errors.Add("Run at: a date and time expected.");
+            else
+            {
+                try { runAt = new DateTimeOffset(DashboardForms.ToUtc(d, tz), TimeSpan.Zero); }
+                catch (ArgumentException) { errors.Add($"Run at: {r} does not exist in {tz.Id} (daylight-saving change)."); }
+            }
         }
         if (Get("opt.maxAttempts") is { } m)
         {
@@ -411,6 +417,16 @@ public static class DashboardEndpoints
     private static TimeZoneInfo Zone(HttpContext http) =>
         http.Request.Cookies[ZoneCookie] is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var tz) ? tz : OptionsOf(http).TimeZone;
 
+    /// The one script on the dashboard: on a first visit, adopt the browser's time zone so times and the Run at picker match the
+    /// viewer's clock. Only on GET, so the reload never resubmits a form. Once the cookie exists the script is not emitted again,
+    /// even if the server does not know the zone (it then falls back to DashboardOptions.TimeZone), so it cannot loop.
+    private static string DetectZone(HttpContext http, string basePath, string nonce)
+    {
+        if (!HttpMethods.IsGet(http.Request.Method) || http.Request.Cookies.ContainsKey(ZoneCookie)) return "";
+        var path = basePath.Length == 0 ? "/" : basePath;
+        return $$"""<script nonce="{{nonce}}">(function(){var z=Intl.DateTimeFormat().resolvedOptions().timeZone;if(!z||!/^[A-Za-z0-9_+\/-]+$/.test(z))return;document.cookie="{{ZoneCookie}}="+z+";path={{path}};max-age=31536000;samesite=lax";if(z!=={{System.Text.Json.JsonSerializer.Serialize(Zone(http).Id)}})location.reload();})();</script>""";
+    }
+
     private static string Theme(HttpContext http) => http.Request.Cookies[ThemeCookie] switch { "light" => "light", "dark" => "dark", _ => "system" };
 
     /// Header controls: a one-click theme toggle and a time zone picker, both plain form posts.
@@ -450,7 +466,9 @@ public static class DashboardEndpoints
     private static IResult Page(HttpContext http, int status, string title, string body, string basePath, bool autoRefresh = false)
     {
         var headers = http.Response.Headers;
-        headers.ContentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+        // The only script allowed is the time zone detector, by a per-response nonce.
+        var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+        headers.ContentSecurityPolicy = $"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
         headers.XContentTypeOptions = "nosniff";
         headers["Referrer-Policy"] = "no-referrer";
         headers.CacheControl = "no-store";
@@ -459,27 +477,32 @@ public static class DashboardEndpoints
             <!doctype html>
             <html lang="en"{{(Theme(http) is "system" ? "" : $" data-theme=\"{Theme(http)}\"")}}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             {{(autoRefresh ? $"<meta http-equiv=\"refresh\" content=\"{RefreshSeconds}\">" : "")}}
-            <title>{{E(title)}} · Background Jobs</title><style>{{Css}}</style></head>
+            <title>{{E(title)}} · Background Jobs</title><style>{{Css}}</style>{{DetectZone(http, basePath, nonce)}}</head>
             <body><header class="top"><a href="{{basePath}}" class="brand"><span class="logo"></span>Background Jobs</a>{{Preferences(http, basePath)}}</header>
             <main>{{body}}</main></body></html>
             """;
         return Results.Content(html, "text/html; charset=utf-8", Encoding.UTF8, status);
     }
 
-    private static string ListUrl(string basePath, JobState? state, Guid? after, bool autoRefresh)
+    private static string ListUrl(string basePath, JobState? state, Guid? after, bool desc, bool autoRefresh)
     {
         var q = new List<string>();
         if (state != null) q.Add($"state={state.Value.ToWire()}");
         if (after != null) q.Add($"after={after}");
+        if (!desc) q.Add("dir=asc");
         if (!autoRefresh) q.Add("refresh=off");
         return q.Count == 0 ? basePath : $"{basePath}?{string.Join("&amp;", q)}";
     }
 
-    private static string Tab(string basePath, JobState? state, JobState? current, bool autoRefresh) =>
-        $"<a class=\"tab{(state == current ? " active" : "")}\" href=\"{ListUrl(basePath, state, null, autoRefresh)}\">{state?.ToWire() ?? "all"}</a>";
+    private static string Tab(string basePath, JobState? state, JobState? current, bool desc, bool autoRefresh) =>
+        $"<a class=\"tab{(state == current ? " active" : "")}\" href=\"{ListUrl(basePath, state, null, desc, autoRefresh)}\">{state?.ToWire() ?? "all"}</a>";
 
-    private static string RefreshToggle(string basePath, JobState? state, Guid? after, bool on) =>
-        $"<a class=\"btn outline\" href=\"{ListUrl(basePath, state, after, !on)}\"><span class=\"pulse{(on ? " on" : "")}\"></span>Auto-refresh {(on ? "on" : "off")}</a>";
+    // Flipping the direction restarts from the first page; a cursor only makes sense in the direction it came from.
+    private static string SortHeader(string basePath, JobState? state, bool desc, bool autoRefresh) =>
+        $"<a class=\"sort\" href=\"{ListUrl(basePath, state, null, !desc, autoRefresh)}\">Created {(desc ? "&darr;" : "&uarr;")}</a>";
+
+    private static string RefreshToggle(string basePath, JobState? state, Guid? after, bool desc, bool on) =>
+        $"<a class=\"btn outline\" href=\"{ListUrl(basePath, state, after, desc, !on)}\"><span class=\"pulse{(on ? " on" : "")}\"></span>Auto-refresh {(on ? "on" : "off")}</a>";
 
     private static string ActionForm(string action, string label, string cls) =>
         $"<form method=\"post\" action=\"{action}\"><button class=\"{cls}\" type=\"submit\">{label}</button></form>";
@@ -511,7 +534,7 @@ public static class DashboardEndpoints
         .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
         .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px}
         table{width:100%;border-collapse:collapse}th{text-align:left;font-weight:500;color:var(--muted-foreground);height:40px;padding:0 16px}
-        td{padding:10px 16px;border-top:1px solid var(--border)}tbody tr:hover{background:var(--muted)}td a{font-weight:500;text-decoration:none}td a:hover{text-decoration:underline}
+        td{padding:10px 16px;border-top:1px solid var(--border)}tbody tr:hover{background:var(--muted)}td a{font-weight:500;text-decoration:none}th a.sort{color:inherit;text-decoration:none}th a.sort:hover{color:var(--foreground)}td a:hover{text-decoration:underline}
         .num{text-align:right}.empty{text-align:center;color:var(--muted-foreground);padding:40px}
         .tabs{display:inline-flex;flex-wrap:wrap;gap:2px;background:var(--muted);padding:4px;border-radius:var(--radius);margin-bottom:16px}
         .tab{padding:4px 12px;border-radius:calc(var(--radius) - 2px);text-decoration:none;color:var(--muted-foreground);font-weight:500}

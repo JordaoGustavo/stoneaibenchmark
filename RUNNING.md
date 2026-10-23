@@ -34,7 +34,7 @@ curl -s localhost:8080/api/jobs/<id>
 curl -s localhost:8080/demo/events
 ```
 
-Painel: abra `http://localhost:8080/jobs` (pacote `BackgroundJobs.Dashboard`, ligado com `app.MapBackgroundJobsDashboard()`; HTML renderizado no servidor, sem JavaScript).
+Painel: abra `http://localhost:8080/jobs` (pacote `BackgroundJobs.Dashboard`, ligado com `app.MapBackgroundJobsDashboard()`; HTML renderizado no servidor; o único JavaScript detecta o fuso do navegador na primeira visita e o grava no cookie `bj_tz`).
 
 ## Telemetria (OTLP + Grafana)
 
@@ -63,6 +63,10 @@ Os testes E2E (`tests/BackgroundJobs.E2E/Scenarios`, um arquivo por critério de
 store em memória (demo com `STORAGE=memory`))
 sobem a demo como processo real contra um Postgres do Testcontainers, usando `kill -9` e `SIGTERM` de verdade.
 Precisam do Docker rodando.
+
+A suíte de contrato do store (`tests/BackgroundJobs.StoreContract`) chama o `IJobStore` diretamente. Os mesmos testes
+rodam contra o `PostgresJobStore` e o `InMemoryJobStore`, então um comportamento que só um dos dois tem quebra ali. Dá
+para rodar só ela com `dotnet test tests/BackgroundJobs.StoreContract` (cerca de 10 s).
 
 ## Usar a biblioteca sem HTTP
 

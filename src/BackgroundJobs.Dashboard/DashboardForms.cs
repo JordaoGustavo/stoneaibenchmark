@@ -18,17 +18,17 @@ internal static class DashboardForms
 
     private sealed record Field(string JsonName, string Label, Type Type, Kind Kind, bool Required, object? Default);
 
-    public static string Render(Type argsType, IFormCollection? posted)
+    public static string Render(Type argsType, IFormCollection? posted, TimeZoneInfo tz)
     {
         var fields = FieldsOf(argsType);
         var sb = new StringBuilder();
         if (fields.Count == 0) sb.Append("<p class=\"muted\">This job takes no arguments.</p>");
-        foreach (var f in fields) sb.Append(RenderField(f, posted));
+        foreach (var f in fields) sb.Append(RenderField(f, posted, tz));
         return sb.ToString();
     }
 
     /// Builds the args object from the posted form and checks it deserializes into the job's argument type.
-    public static JsonObject Parse(Type argsType, IFormCollection form, List<string> errors)
+    public static JsonObject Parse(Type argsType, IFormCollection form, TimeZoneInfo tz, List<string> errors)
     {
         var result = new JsonObject();
         foreach (var f in FieldsOf(argsType))
@@ -40,8 +40,8 @@ internal static class DashboardForms
                 else if (f.Required) errors.Add($"{f.Label} is required.");
                 continue;
             }
-            try { result[f.JsonName] = ToNode(f, raw); }
-            catch (Exception e) when (e is FormatException or OverflowException or JsonException)
+            try { result[f.JsonName] = ToNode(f, raw, tz); }
+            catch (Exception e) when (e is FormatException or OverflowException or JsonException or ArgumentException)
             {
                 errors.Add($"{f.Label}: {Describe(f.Kind)} expected.");
             }
@@ -54,24 +54,31 @@ internal static class DashboardForms
         return result;
     }
 
-    private static JsonNode? ToNode(Field f, string raw) => f.Kind switch
+    private static JsonNode? ToNode(Field f, string raw, TimeZoneInfo tz) => f.Kind switch
     {
         Kind.Integer => JsonValue.Create(long.Parse(raw, CultureInfo.InvariantCulture)),
         Kind.Decimal => JsonValue.Create(decimal.Parse(raw, NumberStyles.Float, CultureInfo.InvariantCulture)),
         Kind.Bool => JsonValue.Create(raw == "true"),
         // Enums are stored as their numeric value: JobJson has no string-enum converter.
         Kind.Enum => JsonValue.Create(long.Parse(raw, CultureInfo.InvariantCulture)),
-        Kind.DateTime => JsonValue.Create(DateTime.SpecifyKind(DateTime.Parse(raw, CultureInfo.InvariantCulture), DateTimeKind.Utc)),
+        Kind.DateTime => JsonValue.Create(ToUtc(DateTime.Parse(raw, CultureInfo.InvariantCulture), tz)),
         Kind.Guid => JsonValue.Create(Guid.Parse(raw)),
         Kind.TimeSpan => JsonValue.Create(TimeSpan.Parse(raw, CultureInfo.InvariantCulture).ToString("c")),
         Kind.Json => JsonNode.Parse(raw),
         _ => JsonValue.Create(raw),
     };
 
-    private static string RenderField(Field f, IFormCollection? posted)
+    /// datetime-local inputs carry a wall-clock time with no offset; it is read in the viewer's time zone.
+    /// Throws ArgumentException for a time skipped by a daylight-saving jump.
+    public static DateTime ToUtc(DateTime wallClock, TimeZoneInfo tz) =>
+        TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(wallClock, DateTimeKind.Unspecified), tz);
+
+    public static string ZoneLabel(TimeZoneInfo tz) => tz.Id;
+
+    private static string RenderField(Field f, IFormCollection? posted, TimeZoneInfo tz)
     {
         var name = ArgPrefix + f.JsonName;
-        var value = posted?[name].LastOrDefault() ?? FormatDefault(f);
+        var value = posted?[name].LastOrDefault() ?? FormatDefault(f, tz);
         var id = "f-" + f.JsonName;
         var req = f.Required ? " required" : "";
         var sb = new StringBuilder("<div class=\"field\">");
@@ -83,7 +90,7 @@ internal static class DashboardForms
             sb.Append("<label class=\"check\"><input type=\"hidden\" name=\"").Append(name).Append("\" value=\"false\">")
               .Append("<input type=\"checkbox\" id=\"").Append(id).Append("\" name=\"").Append(name).Append("\" value=\"true\"")
               .Append(on ? " checked" : "").Append("> ").Append(E(f.Label)).Append("</label>");
-            return sb.Append(Hint(f)).Append("</div>").ToString();
+            return sb.Append(Hint(f, tz)).Append("</div>").ToString();
         }
 
         sb.Append("<label for=\"").Append(id).Append("\">").Append(E(f.Label))
@@ -120,21 +127,21 @@ internal static class DashboardForms
                   .Append("\" value=\"").Append(v).Append('"').Append(extra).Append(req).Append('>');
                 break;
         }
-        return sb.Append(Hint(f)).Append("</div>").ToString();
+        return sb.Append(Hint(f, tz)).Append("</div>").ToString();
     }
 
-    private static string Hint(Field f)
+    private static string Hint(Field f, TimeZoneInfo tz)
     {
         var t = Nullable.GetUnderlyingType(f.Type) ?? f.Type;
-        var suffix = f.Kind == Kind.DateTime ? " · UTC" : "";
+        var suffix = f.Kind == Kind.DateTime ? $" · {ZoneLabel(tz)}" : "";
         return $"<p class=\"hint mono\">{E(f.JsonName)}: {E(TypeName(t))}{suffix}</p>";
     }
 
-    private static string? FormatDefault(Field f) => f.Default switch
+    private static string? FormatDefault(Field f, TimeZoneInfo tz) => f.Default switch
     {
         null => null,
-        DateTime d => d.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
-        DateTimeOffset d => d.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+        DateTime d => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(d, DateTimeKind.Utc), tz).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+        DateTimeOffset d => TimeZoneInfo.ConvertTimeFromUtc(d.UtcDateTime, tz).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
         Enum e => Convert.ToInt64(e, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
         IFormattable x => x.ToString(null, CultureInfo.InvariantCulture),
         var x => x.ToString(),

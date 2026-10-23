@@ -99,13 +99,14 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             row.RefundedAttempts, row.Queue, row.Priority, row.IdempotencyKey);
     }
 
-    public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, bool descending, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<SummaryRow>("""
+        var (op, dir) = descending ? ("<", "DESC") : (">", "ASC");
+        var rows = await conn.QueryAsync<SummaryRow>($"""
             SELECT id, name, state, attempts, run_at, created_at, updated_at, queue, priority FROM bj_jobs
-            WHERE @after::uuid IS NULL OR id > @after::uuid
-            ORDER BY id LIMIT @limit
+            WHERE @after::uuid IS NULL OR id {op} @after::uuid
+            ORDER BY id {dir} LIMIT @limit
             """, new { after, limit });
         return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority)).ToList();
     }
@@ -148,8 +149,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // A constant per order, never user input. State spelled out (= JobTransition.Claim.From) so the planner can prove
         // the partial indexes' predicate, prepared statements included: bj_jobs_ready or bj_jobs_ready_fifo.
         var order = request.Order == ClaimOrder.Priority ? "priority DESC, enqueued_at, enqueue_seq" : "enqueued_at, enqueue_seq";
-        await using var conn = await db.OpenConnectionAsync(ct);
         var limits = request.ConcurrencyLimits;
+        await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         // Limited names: one claim at a time per name across all nodes (sorted, so two claims never wait on each other),

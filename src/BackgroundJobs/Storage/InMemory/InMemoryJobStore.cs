@@ -50,14 +50,14 @@ internal sealed class InMemoryJobStore : IJobStore
         }
     }
 
-    public Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct)
+    public Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, bool descending, CancellationToken ct)
     {
         lock (_lock)
         {
             var cursor = after?.ToString();
-            IReadOnlyList<JobSummary> page = _jobs.Values
-                .Where(r => cursor == null || string.CompareOrdinal(r.Key, cursor) > 0)
-                .OrderBy(r => r.Key, StringComparer.Ordinal)
+            var sign = descending ? -1 : 1;
+            var matches = _jobs.Values.Where(r => cursor == null || sign * string.CompareOrdinal(r.Key, cursor) > 0);
+            IReadOnlyList<JobSummary> page = (descending ? matches.OrderByDescending(r => r.Key, StringComparer.Ordinal) : matches.OrderBy(r => r.Key, StringComparer.Ordinal))
                 .Take(limit)
                 .Select(r => new JobSummary(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority))
                 .ToList();
