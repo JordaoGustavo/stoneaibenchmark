@@ -19,6 +19,9 @@ internal interface IJobStore
     Task<Job?> GetAsync(Guid id, CancellationToken ct);
     Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct);
 
+    /// Earliest run_at among scheduled jobs, or null when none.
+    Task<DateTime?> NextRunAtAsync(CancellationToken ct);
+
     /// scheduled → enqueued for every job whose run_at has passed. Returns how many were promoted.
     Task<int> PromoteDueAsync(DateTime now, CancellationToken ct);
 

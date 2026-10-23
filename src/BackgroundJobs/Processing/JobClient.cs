@@ -24,7 +24,8 @@ internal sealed class JobClient(IJobStore store, Signals signals, IOptions<Backg
         await store.InsertAsync(new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), maxAttempts,
             (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now), ct);
-        signals.Dispatcher.Set();
+        if (jobOptions?.RunAt?.UtcDateTime > now) signals.Scheduler.Set();
+        else signals.Dispatcher.Set();
         return id;
     }
 

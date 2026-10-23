@@ -22,10 +22,24 @@ internal sealed class WakeSignal
     }
 
     public Task WaitAsync(TimeSpan timeout, CancellationToken ct) => _semaphore.WaitAsync(timeout, ct);
+
+    /// Like WaitAsync, but the timeout runs on <paramref name="time"/> so fake clocks drive it.
+    public async Task WaitAsync(TimeSpan timeout, TimeProvider time, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var wake = _semaphore.WaitAsync(Timeout.Infinite, cts.Token);
+        var delay = Task.Delay(timeout, time, cts.Token);
+        await Task.WhenAny(wake, delay);
+        await cts.CancelAsync();
+        try { await Task.WhenAll(wake, delay); }
+        catch (OperationCanceledException) { }
+        ct.ThrowIfCancellationRequested();
+    }
 }
 
 /// Separate signals so a wake-up for the dispatcher is never consumed by the scheduler.
 internal sealed class Signals
 {
     public WakeSignal Dispatcher { get; } = new();
+    public WakeSignal Scheduler { get; } = new();
 }

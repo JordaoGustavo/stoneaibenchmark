@@ -46,6 +46,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
             }, tx);
         await InsertHistoryAsync(conn, tx, job.Id, state, job.Now, scheduled ? Reasons.ScheduledAtCreation : Reasons.Created);
+        await NotifyAsync(conn, tx, scheduled ? JobNotifications.Scheduled : JobNotifications.Enqueued);
         await tx.CommitAsync(ct);
     }
 
@@ -79,10 +80,17 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt)).ToList();
     }
 
+    public async Task<DateTime?> NextRunAtAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<DateTime?>("SELECT min(run_at) FROM bj_jobs WHERE state = 'scheduled'");
+    }
+
     public async Task<int> PromoteDueAsync(DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        return await conn.ExecuteAsync("""
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var promoted = await conn.ExecuteAsync("""
             WITH due AS (
                 SELECT id FROM bj_jobs WHERE state = 'scheduled' AND run_at <= @now
                 ORDER BY run_at, id FOR UPDATE SKIP LOCKED
@@ -93,7 +101,10 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 RETURNING j.id
             )
             INSERT INTO bj_history (job_id, state, at, reason) SELECT id, 'enqueued', @now, @reason FROM promoted
-            """, new { now, reason = Reasons.BecameDue });
+            """, new { now, reason = Reasons.BecameDue }, tx);
+        if (promoted > 0) await NotifyAsync(conn, tx, JobNotifications.Enqueued);
+        await tx.CommitAsync(ct);
+        return promoted;
     }
 
     public async Task<ClaimedJob?> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
@@ -228,8 +239,14 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             tx);
         if (changed == 0) return false;
         await InsertHistoryAsync(conn, tx, t.Id, t.To, t.Now, t.Reason);
+        if (t.To is JobState.Enqueued or JobState.Scheduled)
+            await NotifyAsync(conn, tx, t.To == JobState.Enqueued ? JobNotifications.Enqueued : JobNotifications.Scheduled);
         return true;
     }
+
+    /// Delivered on commit; Postgres folds identical notifications within a transaction.
+    private static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, string payload) =>
+        conn.ExecuteAsync("SELECT pg_notify(@channel, @payload)", new { channel = JobNotifications.Channel, payload }, tx);
 
     private static Task InsertHistoryAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid id, JobState state, DateTime at, string reason) =>
         conn.ExecuteAsync("INSERT INTO bj_history (job_id, state, at, reason) VALUES (@id, @state, @at, @reason)",
