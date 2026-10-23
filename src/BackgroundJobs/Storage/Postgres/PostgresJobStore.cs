@@ -96,33 +96,37 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             """, new { now, reason = Reasons.BecameDue });
     }
 
-    public async Task<ClaimedJob?> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
+    public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        // One statement = one transaction: claim, attempts++, open attempt, history.
-        return await conn.QuerySingleOrDefaultAsync<ClaimedJob>("""
-            WITH next AS (
-                SELECT id FROM bj_jobs
+        // One statement = one transaction: claim, attempts++, open attempts, history.
+        var rows = await conn.QueryAsync<ClaimedJob>("""
+            WITH locked AS (
+                SELECT id, enqueued_at, enqueue_seq FROM bj_jobs
                 WHERE state = 'enqueued' AND NOT (name = ANY(@excluded))
                 ORDER BY enqueued_at, enqueue_seq
-                LIMIT 1 FOR UPDATE SKIP LOCKED
+                LIMIT @limit FOR UPDATE SKIP LOCKED
+            ), next AS (
+                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY enqueued_at, enqueue_seq)] AS attempt_id FROM locked
             ), claimed AS (
                 UPDATE bj_jobs j SET state = 'processing', attempts = j.attempts + 1, version = j.version + 1,
                        updated_at = @now, locked_by = @nodeId, lease_expires_at = @leaseUntil
                 FROM next WHERE j.id = next.id
-                RETURNING j.*
+                RETURNING j.*, next.attempt_id
             ), attempt AS (
                 INSERT INTO bj_attempts (id, job_id, run, attempt, started_at)
-                SELECT @attemptId, id, run, attempts, @now FROM claimed
+                SELECT attempt_id, id, run, attempts, @now FROM claimed
             ), history AS (
                 INSERT INTO bj_history (job_id, state, at, reason)
                 SELECT id, 'processing', @now, @reason FROM claimed
             )
             SELECT id, name, args::text AS args_json, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
-                   version, @attemptId AS attempt_id
+                   version, attempt_id
             FROM claimed
+            ORDER BY enqueued_at, enqueue_seq
             """,
-            new { nodeId, now, leaseUntil, excluded = excludedNames.ToArray(), attemptId = Guid.CreateVersion7(), reason = Reasons.Claimed });
+            new { nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(), reason = Reasons.Claimed });
+        return rows.AsList();
     }
 
     public Task<bool> SucceedAsync(ClaimedJob job, string nodeId, DateTime finishedAt, CancellationToken ct) =>

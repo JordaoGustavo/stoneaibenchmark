@@ -32,6 +32,13 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
         }
     }
 
+    /// True while some type awaits its half-open trial: the dispatcher then claims one job at a time,
+    /// so a batch cannot take several trials of the same type.
+    public bool TrialPending()
+    {
+        lock (_lock) return _states.Values.Any(s => s.Phase == Phase.HalfOpenIdle);
+    }
+
     /// Called serially by the dispatcher right after a claim, so only one half-open trial is ever taken.
     public void OnClaimed(string name)
     {

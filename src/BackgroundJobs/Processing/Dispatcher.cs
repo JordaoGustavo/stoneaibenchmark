@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-/// Claims a job only when a worker slot is free (no prefetch), so at most WorkerCount functions run at once.
+/// Claims at most as many jobs as there are free worker slots (no prefetch), so at most WorkerCount functions run at once.
 internal sealed class Dispatcher(
     IJobStore store,
     JobExecutor executor,
@@ -31,31 +31,40 @@ internal sealed class Dispatcher(
             while (!ct.IsCancellationRequested)
             {
                 await slots.WaitAsync(ct);
+                var free = 1;
+                var max = Math.Min(o.ClaimBatchSize ?? o.WorkerCount, o.WorkerCount);
+                while (free < max && slots.Wait(0)) free++;
+
                 // Never cancel a claim halfway: a committed claim must reach the executor.
-                var job = await storeBreaker.TryAsync("claim", () =>
+                var jobs = await storeBreaker.TryAsync("claim", () =>
                 {
                     var now = time.UtcNow();
-                    return store.ClaimAsync(o.NodeId, now, now + o.LeaseDuration, jobBreaker.BlockedNames(), CancellationToken.None);
-                }, CancellationToken.None);
+                    var blocked = jobBreaker.BlockedNames();
+                    var limit = jobBreaker.TrialPending() ? 1 : free;
+                    return store.ClaimAsync(o.NodeId, now, now + o.LeaseDuration, limit, blocked, CancellationToken.None);
+                }, CancellationToken.None) ?? [];
 
-                if (job == null)
+                if (free > jobs.Count) slots.Release(free - jobs.Count);
+                if (jobs.Count == 0)
                 {
-                    slots.Release();
                     await signals.Dispatcher.WaitAsync(o.PollInterval, ct);
                     continue;
                 }
 
-                jobBreaker.OnClaimed(job.Name);
-                lock (_lock) _running[job.Id] = Task.Run(async () =>
+                foreach (var job in jobs)
                 {
-                    try { await executor.ExecuteAsync(job); }
-                    finally
+                    jobBreaker.OnClaimed(job.Name);
+                    lock (_lock) _running[job.Id] = Task.Run(async () =>
                     {
-                        lock (_lock) _running.Remove(job.Id);
-                        slots.Release();
-                        signals.Dispatcher.Set();
-                    }
-                }, CancellationToken.None);
+                        try { await executor.ExecuteAsync(job); }
+                        finally
+                        {
+                            lock (_lock) _running.Remove(job.Id);
+                            slots.Release();
+                            signals.Dispatcher.Set();
+                        }
+                    }, CancellationToken.None);
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
