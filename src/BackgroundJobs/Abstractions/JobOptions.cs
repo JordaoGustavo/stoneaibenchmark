@@ -26,6 +26,9 @@ public sealed class BackgroundJobsOptions
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(30);
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(250);
 
+    /// Longest the scheduler sleeps without checking the store; a fallback for missed notifications.
+    public TimeSpan SchedulerMaxWait { get; set; } = TimeSpan.FromSeconds(5);
+
     public int DefaultMaxAttempts { get; set; } = 3;
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan DefaultRetryJitter { get; set; } = TimeSpan.Zero;
@@ -35,5 +38,6 @@ public sealed class BackgroundJobsOptions
         if (string.IsNullOrWhiteSpace(ConnectionString)) throw new ArgumentException("ConnectionString is required");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
+        if (SchedulerMaxWait <= TimeSpan.Zero) throw new ArgumentException("SchedulerMaxWait must be positive");
     }
 }

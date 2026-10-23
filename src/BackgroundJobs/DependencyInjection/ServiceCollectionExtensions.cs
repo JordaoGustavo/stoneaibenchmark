@@ -23,8 +23,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(registry);
 
         services.TryAddSingleton(TimeProvider.System);
-        services.AddSingleton<IJobStore>(sp =>
-            new PostgresJobStore(NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<BackgroundJobsOptions>>().Value.ConnectionString)));
+        services.AddSingleton(sp => new JobDataSource(
+            NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<BackgroundJobsOptions>>().Value.ConnectionString)));
+        services.AddSingleton<IJobStore>(sp => new PostgresJobStore(sp.GetRequiredService<JobDataSource>().Db));
+        services.AddSingleton<PostgresJobListener>();
         services.AddSingleton<Signals>();
         services.AddSingleton<StoreCircuitBreaker>();
         services.AddSingleton<JobCircuitBreaker>();
