@@ -23,6 +23,11 @@ internal sealed class PostgresJobListener(JobDataSource source, IJobSignals sign
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromMilliseconds(500), MaxBackoff = TimeSpan.FromSeconds(30);
 
+    /// A connection whose peer vanished (no FIN, no RST) waits forever for notifications: after this long without one,
+    /// a ping that must answer within PingTimeout proves the connection alive, or drops it to reconnect.
+    private static readonly TimeSpan IdlePing = TimeSpan.FromSeconds(30);
+    private const int PingTimeoutSeconds = 10;
+
     public async Task RunAsync(CancellationToken ct)
     {
         var backoff = MinBackoff;
@@ -38,7 +43,12 @@ internal sealed class PostgresJobListener(JobDataSource source, IJobSignals sign
                 // Catch up on anything written while we were not listening.
                 signals.JobsReady();
                 signals.SchedulesChanged();
-                while (true) await conn.WaitAsync(ct);
+                while (true)
+                {
+                    if (await conn.WaitAsync(IdlePing, ct)) continue;
+                    await using var ping = new NpgsqlCommand("SELECT 1", conn) { CommandTimeout = PingTimeoutSeconds };
+                    await ping.ExecuteNonQueryAsync(ct);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception e)

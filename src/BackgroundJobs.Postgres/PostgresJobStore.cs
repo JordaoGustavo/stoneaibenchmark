@@ -121,18 +121,23 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         var t = JobTransition.Promote;
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        // State spelled out (= JobTransition.Promote.From) so the planner can use the bj_jobs_due partial index. Sequence
+        // numbers are drawn in the select list over the sorted rows, so they follow run_at as in the in-memory store
+        // (all promoted jobs share enqueued_at, so the sequence alone orders them).
         var promoted = await conn.ExecuteAsync("""
             WITH due AS (
-                SELECT id FROM bj_jobs WHERE state = ANY(@from) AND run_at <= @now
-                ORDER BY run_at, id FOR UPDATE SKIP LOCKED
+                SELECT id, nextval('bj_enqueue_seq') AS seq FROM (
+                    SELECT id FROM bj_jobs WHERE state = 'scheduled' AND run_at <= @now
+                    ORDER BY run_at, id FOR UPDATE SKIP LOCKED
+                ) sorted
             ), promoted AS (
                 UPDATE bj_jobs j SET state = @to, run_at = NULL, enqueued_at = @now,
-                       enqueue_seq = nextval('bj_enqueue_seq'), version = j.version + 1, updated_at = @now
+                       enqueue_seq = due.seq, version = j.version + 1, updated_at = @now
                 FROM due WHERE j.id = due.id
-                RETURNING j.id
+                RETURNING j.id, due.seq
             )
-            INSERT INTO bj_history (job_id, state, at, reason) SELECT id, @to, @now, @reason FROM promoted
-            """, new { now, from = Wire(t.From), to = t.To.ToWire(), reason = t.Reason }, tx);
+            INSERT INTO bj_history (job_id, state, at, reason) SELECT id, @to, @now, @reason FROM promoted ORDER BY seq
+            """, new { now, to = t.To.ToWire(), reason = t.Reason }, tx);
         if (promoted > 0) await NotifyAsync(conn, tx, t.To);
         await tx.CommitAsync(ct);
         return promoted;
@@ -144,7 +149,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // the partial indexes' predicate, prepared statements included: bj_jobs_ready or bj_jobs_ready_fifo.
         var order = request.Order == ClaimOrder.Priority ? "priority DESC, enqueued_at, enqueue_seq" : "enqueued_at, enqueue_seq";
         await using var conn = await db.OpenConnectionAsync(ct);
-        // One statement = one transaction: claim, attempts++, open attempts, history.
+        // One statement = one transaction: claim, attempts++, open attempts, history. The lease is measured on the database's
+        // clock (see IJobStore.RecoverAsync).
         var rows = await conn.QueryAsync<ClaimedJob>($"""
             WITH locked AS (
                 SELECT id, priority, enqueued_at, enqueue_seq FROM bj_jobs
@@ -155,7 +161,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY {order})] AS attempt_id FROM locked
             ), claimed AS (
                 UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
-                       updated_at = @now, locked_by = @nodeId, lease_expires_at = @leaseUntil
+                       updated_at = @now, locked_by = @nodeId, lease_expires_at = now() + @lease
                 FROM next WHERE j.id = next.id
                 RETURNING j.*, next.attempt_id
             ), attempt AS (
@@ -172,7 +178,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             """,
             new
             {
-                queue = request.Queue, nodeId = request.NodeId, now = request.Now, leaseUntil = request.LeaseUntil, limit = request.Limit,
+                queue = request.Queue, nodeId = request.NodeId, now = request.Now, lease = request.LeaseDuration, limit = request.Limit,
                 attemptIds = Enumerable.Range(0, request.Limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = request.ExcludedNames.ToArray(),
                 to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
             });
@@ -219,15 +225,16 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return true;
     }
 
-    public async Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
+    /// Leases are measured on the database's clock; <paramref name="now"/> is not used (see IJobStore.RecoverAsync).
+    public async Task<LeaseRenewal> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime now, TimeSpan leaseDuration, CancellationToken ct)
     {
-        if (ids.Count == 0) return [];
+        if (ids.Count == 0) return new LeaseRenewal([], []);
         await using var conn = await db.OpenConnectionAsync(ct);
-        var renewed = await conn.QueryAsync<(Guid Id, bool CancelRequested)>("""
-            UPDATE bj_jobs SET lease_expires_at = @leaseUntil WHERE id = ANY(@ids) AND locked_by = @nodeId AND state = 'processing'
+        var renewed = (await conn.QueryAsync<(Guid Id, bool CancelRequested)>("""
+            UPDATE bj_jobs SET lease_expires_at = now() + @lease WHERE id = ANY(@ids) AND locked_by = @nodeId AND state = 'processing'
             RETURNING id, cancel_requested_at IS NOT NULL
-            """, new { leaseUntil, ids = ids.ToArray(), nodeId });
-        return renewed.Where(r => r.CancelRequested).Select(r => r.Id).ToList();
+            """, new { lease = leaseDuration, ids = ids.ToArray(), nodeId })).AsList();
+        return new LeaseRenewal(renewed.Select(r => r.Id).ToList(), renewed.Where(r => r.CancelRequested).Select(r => r.Id).ToList());
     }
 
     public async Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct)
@@ -246,15 +253,17 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return requested;
     }
 
+    /// Expiry is checked on the database's clock, the one leases are written with; <paramref name="now"/> only stamps
+    /// the history and attempts.
     public async Task<int> RecoverAsync(DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var stale = (await conn.QueryAsync<StaleRow>("""
             SELECT id, version, run, attempts - refunded_attempts AS attempts, max_attempts, cancel_requested_at IS NOT NULL AS cancel_requested FROM bj_jobs
-            WHERE state = 'processing' AND lease_expires_at < @now
+            WHERE state = 'processing' AND lease_expires_at < now()
             FOR UPDATE SKIP LOCKED
-            """, new { now }, tx)).ToList();
+            """, transaction: tx)).ToList();
 
         foreach (var job in stale)
         {
@@ -274,8 +283,11 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         while (true)
         {
             await using var tx = await conn.BeginTransactionAsync(ct);
+            // Locked, so a concurrent promotion, claim or purge either lands before (and is read here) or waits for this
+            // transaction; unlocked, the version read could go stale and turn a valid transition into a conflict. A job
+            // purged while this waited reads as missing (read committed re-checks the row once its lock is released).
             var current = await conn.QuerySingleOrDefaultAsync<(string State, int Version, string? IdempotencyKey)?>(
-                "SELECT state, version, idempotency_key FROM bj_jobs WHERE id = @id", new { id }, tx);
+                "SELECT state, version, idempotency_key FROM bj_jobs WHERE id = @id FOR UPDATE", new { id }, tx);
             if (current is null) throw new JobNotFoundException(id);
             bool changed;
             try

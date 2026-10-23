@@ -11,6 +11,7 @@ internal sealed class Scheduler(
     ILogger<Scheduler> logger)
 {
     private const int RecurringBatch = 100;
+    private static readonly TimeSpan StuckBackoff = TimeSpan.FromMilliseconds(100);
 
     /// Definitions this node cannot schedule (a time zone or cron it cannot read); neither changes while the process
     /// runs, so they are left to other nodes and logged once.
@@ -21,7 +22,8 @@ internal sealed class Scheduler(
         var o = options.Value;
         while (!ct.IsCancellationRequested)
         {
-            var promoted = await storeBreaker.TryAsync("promote", () => store.PromoteDueAsync(time.UtcNow(), ct), ct);
+            var promotedAt = time.UtcNow();
+            var promoted = await storeBreaker.TryAsync("promote", () => store.PromoteDueAsync(promotedAt, ct), ct);
             if (promoted > 0) signals.JobsReady();
             await storeBreaker.TryAsync("fire-recurring", () => FireDueRecurringAsync(ct), ct);
             // Boxed so a store failure (null) is distinguishable from "nothing scheduled".
@@ -30,7 +32,10 @@ internal sealed class Scheduler(
             var wait = next is null ? o.PollInterval
                 : next.Item1 is { } at ? Min(at - time.UtcNow(), o.SchedulerMaxWait)
                 : o.SchedulerMaxWait;
-            if (wait <= TimeSpan.Zero) continue;
+            // Something was already due when promoting and is still scheduled: another transaction holds its row (promotion
+            // skips locked rows). Retrying at once would spin until that transaction ends, so back off a little.
+            if (next?.Item1 <= promotedAt) wait = Min(o.PollInterval, StuckBackoff);
+            else if (wait <= TimeSpan.Zero) continue;
             try { await signals.Scheduler.WaitAsync(wait, time, ct); }
             catch (OperationCanceledException) { return; }
         }

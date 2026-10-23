@@ -86,7 +86,7 @@ internal sealed class InMemoryJobStore : IJobStore
 
     public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct)
     {
-        var (queue, order, nodeId, now, leaseUntil, limit, excludedNames) = request;
+        var (queue, order, nodeId, now, leaseDuration, limit, excludedNames) = request;
         lock (_lock)
         {
             var candidates = _jobs.Values
@@ -100,7 +100,7 @@ internal sealed class InMemoryJobStore : IJobStore
                 Apply(r, JobTransition.Claim, r.Version, null, now);
                 r.Attempts++;
                 r.LockedBy = nodeId;
-                r.LeaseExpiresAt = leaseUntil;
+                r.LeaseExpiresAt = now + leaseDuration;
                 var attempt = new AttemptRow(Guid.CreateVersion7(), r.Run, r.Attempts, now);
                 r.AttemptLog.Add(attempt);
                 return new ClaimedJob(r.Id, r.Name, r.ArgsJson, r.ArgsVersion, r.Attempts, r.MaxAttempts, r.RetryDelayMs,
@@ -124,17 +124,19 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(true);
     }
 
-    public Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
+    /// One process, one clock: the caller's now is the store's.
+    public Task<LeaseRenewal> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime now, TimeSpan leaseDuration, CancellationToken ct)
     {
-        var cancelRequested = new List<Guid>();
+        List<Guid> renewed = [], cancelRequested = [];
         lock (_lock)
             foreach (var id in ids)
                 if (_jobs.TryGetValue(id, out var r) && r.LockedBy == nodeId && r.State == JobState.Processing)
                 {
-                    r.LeaseExpiresAt = leaseUntil;
+                    r.LeaseExpiresAt = now + leaseDuration;
+                    renewed.Add(id);
                     if (r.CancelRequestedAt != null) cancelRequested.Add(id);
                 }
-        return Task.FromResult<IReadOnlyCollection<Guid>>(cancelRequested);
+        return Task.FromResult(new LeaseRenewal(renewed, cancelRequested));
     }
 
     public Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct)

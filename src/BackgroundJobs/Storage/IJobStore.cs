@@ -29,9 +29,14 @@ public sealed record QueueStats(string Queue, long Ready, DateTime? OldestReadyA
 public enum ClaimOrder { Priority, Fifo }
 
 /// One claim: up to <see cref="Limit"/> enqueued jobs of <see cref="Queue"/> in <see cref="Order"/>, skipping
-/// <see cref="ExcludedNames"/>, locked to <see cref="NodeId"/> until <see cref="LeaseUntil"/>.
+/// <see cref="ExcludedNames"/>, locked to <see cref="NodeId"/> for <see cref="LeaseDuration"/> (see <see cref="IJobStore.RecoverAsync"/>
+/// for which clock measures it).
 public sealed record ClaimRequest(
-    string Queue, ClaimOrder Order, string NodeId, DateTime Now, DateTime LeaseUntil, int Limit, IReadOnlyCollection<string> ExcludedNames);
+    string Queue, ClaimOrder Order, string NodeId, DateTime Now, TimeSpan LeaseDuration, int Limit, IReadOnlyCollection<string> ExcludedNames);
+
+/// What <see cref="IJobStore.RenewLeasesAsync"/> did: the ids whose lease it extended (the others are no longer this
+/// node's), and those of them a user asked to cancel.
+public sealed record LeaseRenewal(IReadOnlyCollection<Guid> Renewed, IReadOnlyCollection<Guid> CancelRequested);
 
 /// A recurring definition as written by <see cref="IJobStore.UpsertRecurringAsync"/>. NextRunAt is the occurrence computed
 /// from <see cref="Now"/>; the store keeps the stored one instead when Cron and TimeZone did not change.
@@ -127,8 +132,9 @@ public interface IJobStore
     /// so a request is not lost when the attempt ends before the owning node heard of it.
     Task<bool> FinishAsync(ClaimedJob job, string nodeId, JobTransition transition, AttemptOutcome outcome, string? error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct);
 
-    /// Returns those of <paramref name="ids"/> a user asked to cancel (see <see cref="CancelAsync"/>).
-    Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct);
+    /// Extends by <paramref name="leaseDuration"/> the lease of those of <paramref name="ids"/> still processing and locked by
+    /// <paramref name="nodeId"/>, and reports which ones it extended and which a user asked to cancel (see <see cref="CancelAsync"/>).
+    Task<LeaseRenewal> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime now, TimeSpan leaseDuration, CancellationToken ct);
 
     /// Applies <see cref="JobTransition.Cancel"/> to a scheduled or enqueued job and returns false. For a processing job it
     /// only records the request, returned by <see cref="RenewLeasesAsync"/> to the owning node, and returns true. Recovery
@@ -136,6 +142,9 @@ public interface IJobStore
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
     Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct);
 
+    /// A store shared by several nodes measures leases on one clock of its own (both when writing them in
+    /// <see cref="ClaimAsync"/> and <see cref="RenewLeasesAsync"/>, and when checking them here), never on the callers'
+    /// <paramref name="now"/>: nodes' clocks drift apart, and a node behind would write leases another node finds expired.
     /// For every processing job whose lease expired:
     /// closes its open attempts as interrupted and applies <see cref="JobTransition.Recover"/>; or, when a cancel was
     /// requested, as cancelled with <see cref="JobTransition.Cancel"/>.

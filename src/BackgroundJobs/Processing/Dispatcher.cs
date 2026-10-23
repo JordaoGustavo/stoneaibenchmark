@@ -15,12 +15,16 @@ internal sealed class Dispatcher(
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time)
 {
-    private readonly Dictionary<Guid, Task> _running = [];
+    /// LeaseFrom: the <see cref="TimeProvider.GetTimestamp"/> taken just before the claim that leased the job.
+    private sealed record RunningJob(long LeaseFrom, Task Task);
+
+    private readonly Dictionary<Guid, RunningJob> _running = [];
     private readonly Lock _lock = new();
 
-    public IReadOnlyCollection<Guid> RunningIds()
+    /// The running jobs, each with the timestamp its claim's lease started from at the latest.
+    public IReadOnlyDictionary<Guid, long> RunningLeases()
     {
-        lock (_lock) return _running.Keys.ToList();
+        lock (_lock) return _running.ToDictionary(r => r.Key, r => r.Value.LeaseFrom);
     }
 
     /// Returns after <paramref name="ct"/> is cancelled and every running job has finished.
@@ -29,7 +33,7 @@ internal sealed class Dispatcher(
         await Task.WhenAll(options.Value.ConsumedQueues.Select(q => RunQueueAsync(q.Key, q.Value, ct)));
 
         Task[] running;
-        lock (_lock) running = _running.Values.ToArray();
+        lock (_lock) running = _running.Values.Select(r => r.Task).ToArray();
         await Task.WhenAll(running);
     }
 
@@ -54,7 +58,7 @@ internal sealed class Dispatcher(
                 // Up to three claims fill the free slots: one job that may be a reserved half-open trial, the oldest job when
                 // a FIFO claim is due, then the rest by priority. A claim that comes back short means nothing more is ready.
                 // Never cancel a claim halfway: a committed claim must reach the executor.
-                var jobs = new List<ClaimedJob>();
+                var jobs = new List<(ClaimedJob Job, long LeaseFrom)>();
                 var permit = jobBreaker.BeginClaim();
                 try
                 {
@@ -69,17 +73,16 @@ internal sealed class Dispatcher(
                     }
                     if (full && jobs.Count < free) await ClaimAsync(ClaimOrder.Priority, free - jobs.Count, skipped);
                 }
-                finally { jobBreaker.EndClaim(permit, jobs.Select(j => j.Name)); }
+                finally { jobBreaker.EndClaim(permit, jobs.Select(j => j.Job.Name)); }
 
                 async Task<bool> ClaimAsync(ClaimOrder order, int limit, IReadOnlyCollection<string> excluded)
                 {
-                    var claimed = await storeBreaker.TryAsync("claim", () =>
-                    {
-                        var now = time.UtcNow();
-                        return store.ClaimAsync(
-                            new ClaimRequest(queue, order, o.NodeId, now, now + o.LeaseDuration, limit, excluded), CancellationToken.None);
-                    }, CancellationToken.None) ?? [];
-                    jobs.AddRange(claimed);
+                    // Taken before the claim, so the lease this node assumes never outlasts the one the store wrote.
+                    var leaseFrom = time.GetTimestamp();
+                    var claimed = await storeBreaker.TryAsync("claim", () => store.ClaimAsync(
+                        new ClaimRequest(queue, order, o.NodeId, time.UtcNow(), o.LeaseDuration, limit, excluded), CancellationToken.None),
+                        CancellationToken.None) ?? [];
+                    jobs.AddRange(claimed.Select(j => (j, leaseFrom)));
                     if (order == ClaimOrder.Priority) sinceFifo += claimed.Count;
                     return claimed.Count == limit;
                 }
@@ -91,10 +94,10 @@ internal sealed class Dispatcher(
                     continue;
                 }
 
-                foreach (var job in jobs)
+                foreach (var (job, leaseFrom) in jobs)
                 {
                     var abandoned = false;
-                    lock (_lock) _running[job.Id] = Task.Run(async () =>
+                    lock (_lock) _running[job.Id] = new RunningJob(leaseFrom, Task.Run(async () =>
                     {
                         try { await executor.ExecuteAsync(job, ct, Abandon); }
                         finally
@@ -107,9 +110,9 @@ internal sealed class Dispatcher(
                             if (!abandoned) slots.Release();
                             wake.Set();
                         }
-                    }, CancellationToken.None);
+                    }, CancellationToken.None));
 
-                    // Gives the job's worker to the next job while it keeps running (and stays in RunningIds, so its lease
+                    // Gives the job's worker to the next job while it keeps running (and stays in RunningLeases, so its lease
                     // is renewed). False when MaxAbandonedJobs are already running that way.
                     bool Abandon()
                     {

@@ -9,7 +9,7 @@ namespace BackgroundJobs.Processing;
 internal sealed record RecurringSeed(string Id, Func<IRecurringJobClient, CancellationToken, Task> Apply);
 
 /// Lifecycle: migrate → recover → start loops (ready). Stopping halts claims and promotions and waits
-/// for running jobs. It drains in StoppingAsync, before the web server stops, so HTTP keeps accepting enqueues.
+/// for running jobs, renewing their leases until they finish. It drains in StoppingAsync, before the web server stops, so HTTP keeps accepting enqueues.
 internal sealed class JobServer(
     IJobStore store,
     Dispatcher dispatcher,
@@ -62,11 +62,25 @@ internal sealed class JobServer(
         }
         catch (OperationCanceledException) { return; }
 
-        var loops = new[] { dispatcher.RunAsync(ct), scheduler.RunAsync(ct), heartbeat.RunAsync(ct), queueMonitor.RunAsync(ct), retention.RunAsync(ct), listener.RunAsync(ct) };
+        // The heartbeat outlives the stop signal: running jobs are drained after it, and a job whose lease lapsed
+        // meanwhile would be recovered and run a second time by another node. It stops once the dispatcher is done.
+        using var heartbeatStop = new CancellationTokenSource();
+        var draining = dispatcher.RunAsync(ct);
+        var loops = new[]
+        {
+            DrainAsync(), scheduler.RunAsync(ct), heartbeat.RunAsync(heartbeatStop.Token), queueMonitor.RunAsync(ct), retention.RunAsync(ct),
+            listener.RunAsync(ct),
+        };
         _ready = true;
         logger.LogInformation("job server {NodeId} started; workers per queue: {Queues}", o.NodeId,
             string.Join(", ", o.ConsumedQueues.Select(q => $"{q.Key}={q.Value}")));
         await Task.WhenAll(loops);
+
+        async Task DrainAsync()
+        {
+            try { await draining; }
+            finally { await heartbeatStop.CancelAsync(); }
+        }
     }
 
     public async Task StoppingAsync(CancellationToken cancellationToken)

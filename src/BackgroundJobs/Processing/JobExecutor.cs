@@ -46,6 +46,10 @@ internal sealed class JobExecutor(
         activity?.SetTag("job.outcome", outcome.ToWire());
         if (outcome == AttemptOutcome.Failed) activity?.SetStatus(ActivityStatusCode.Error, error);
 
+        // Another node may own the job now: recording anything could overwrite its run. If none does, recovery requeues
+        // the job once the lease expires.
+        if (ReferenceEquals(error, LeaseLostError)) return;
+
         var finishedAt = time.UtcNow();
         try
         {
@@ -112,7 +116,8 @@ internal sealed class JobExecutor(
                     // Recorded now so another node can run it; the code dies with this process.
                     _ = run.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
                     logger.LogWarning("job {JobId} attempt {Attempt} still running {Timeout} ms after shutdown; given up on", job.Id, job.Attempt, Ms(o.ShutdownTimeout));
-                    return cancelled.IsCancellationRequested
+                    return cancelled.LeaseLost ? (AttemptOutcome.Interrupted, LeaseLostError)
+                        : cancelled.IsCancellationRequested
                         ? (AttemptOutcome.Cancelled, null)
                         : (AttemptOutcome.Interrupted, $"still running {Ms(o.ShutdownTimeout)} ms after the server began stopping");
                 }
@@ -136,6 +141,11 @@ internal sealed class JobExecutor(
         }
         // Classified by which token fired, not by exception type: a job may wrap or replace the cancellation exception.
         // The sources are disposed by now; IsCancellationRequested still answers.
+        catch (Exception) when (cancelled.LeaseLost)
+        {
+            logger.LogWarning("job {JobId} attempt {Attempt} stopped: this node lost its lease", job.Id, job.Attempt);
+            return (AttemptOutcome.Interrupted, LeaseLostError);
+        }
         catch (Exception) when (cancelled.IsCancellationRequested)
         {
             logger.LogInformation("job {JobId} attempt {Attempt} cancelled by a user", job.Id, job.Attempt);
@@ -169,6 +179,8 @@ internal sealed class JobExecutor(
         catch (OperationCanceledException) when (!abort.IsCancellationRequested) { }
         await Task.Delay(delay, time, abort);
     }
+
+    private const string LeaseLostError = "this node lost the job's lease";
 
     private static long Ms(TimeSpan t) => (long)t.TotalMilliseconds;
 
