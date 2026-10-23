@@ -69,6 +69,6 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
 - Se o resultado de uma tentativa não puder ser gravado (banco fora), o job só é recuperado quando o lease vence.
 - Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo só usa em `fail-n-times` quando `FAIL_BREAKER_THRESHOLD` (e opcionalmente `FAIL_BREAKER_SECONDS`) está definido.
 - Observabilidade: `QUEUE_MONITOR_MS` e `STALLED_QUEUE_SECONDS` ajustam a amostragem da fila e o limite de fila parada; `GET /demo/telemetry` expõe spans e métricas capturados em memória (substituto de um exporter OpenTelemetry).
-- Retenção: `RETENTION_SECONDS` (padrão 7 dias; `forever` mantém tudo) e `RETENTION_SWEEP_MS` (padrão 60000) controlam a limpeza de jobs finalizados.
+- Retenção: `RETENTION_SECONDS` (padrão 7 dias; `forever` mantém tudo) `RETENTION_SWEEP_MS` (padrão 60000) e `RETENTION_BATCH` (padrão 1000) controlam a limpeza de jobs finalizados.
 - `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`; acima de 1000 jobs é preciso seguir o cursor.
 - A parada graciosa não tem limite de tempo; um `SIGTERM` com job longo espera o job terminar.

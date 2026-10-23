@@ -36,6 +36,7 @@ var jobs = builder.Services.AddBackgroundJobs(
             var seconds => TimeSpan.FromSeconds(double.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture)),
         };
         o.RetentionSweepInterval = TimeSpan.FromMilliseconds(int.Parse(Env("RETENTION_SWEEP_MS", "60000")));
+        o.RetentionBatchSize = int.Parse(Env("RETENTION_BATCH", "1000"));
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     registry => registry
