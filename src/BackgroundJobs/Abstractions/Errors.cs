@@ -12,3 +12,8 @@ public sealed class InvalidJobTransitionException(Guid id, JobState current, str
     public Guid JobId { get; } = id;
     public JobState CurrentState { get; } = current;
 }
+
+public sealed class RecurringJobNotFoundException(string id) : Exception($"recurring job {id} not found")
+{
+    public string RecurringJobId { get; } = id;
+}

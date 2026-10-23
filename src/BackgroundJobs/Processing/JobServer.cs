@@ -5,6 +5,9 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// A recurring job declared with BackgroundJobsBuilder.AddRecurringJob, upserted at every start.
+internal sealed record RecurringSeed(string Id, Func<IRecurringJobClient, CancellationToken, Task> Apply);
+
 /// Lifecycle: migrate → recover → start loops (ready). Stopping halts claims and promotions and waits
 /// for running jobs. It drains in StoppingAsync, before the web server stops, so HTTP keeps accepting enqueues.
 internal sealed class JobServer(
@@ -15,6 +18,8 @@ internal sealed class JobServer(
     QueueMonitor queueMonitor,
     RetentionSweeper retention,
     IJobStoreListener listener,
+    IRecurringJobClient recurring,
+    IEnumerable<RecurringSeed> recurringSeeds,
     StoreCircuitBreaker storeBreaker,
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time,
@@ -45,6 +50,12 @@ internal sealed class JobServer(
                        var recovered = await store.RecoverAsync(time.UtcNow(), o.NodeId, ct);
                        logger.LogInformation("recovered {Count} interrupted jobs", recovered);
                        await LeaseHeartbeat.RegisterAsync(store, o, time, ct);
+                       foreach (var seed in recurringSeeds)
+                       {
+                           // A bad declaration is a code bug: report it, but do not keep the server from starting.
+                           try { await seed.Apply(recurring, ct); }
+                           catch (ArgumentException e) { logger.LogError(e, "recurring job {Id} was not declared", seed.Id); }
+                       }
                        return true;
                    }, ct) != true)
                 ct.ThrowIfCancellationRequested();

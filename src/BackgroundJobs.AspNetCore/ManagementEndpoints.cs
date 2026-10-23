@@ -10,7 +10,12 @@ namespace BackgroundJobs;
 
 public static class ManagementEndpoints
 {
-    /// Maps /api/jobs (list, get, delete, requeue), /health and /health/details. Opt-in.
+    private sealed record UpsertRecurringRequest(string Job, string Cron, JsonElement Args, string? TimeZone = null, RecurringRequestOptions? Options = null);
+
+    private sealed record RecurringRequestOptions(string? Queue = null, int? Priority = null, int? MaxAttempts = null, int? RetryDelayMs = null);
+
+    /// Maps /api/jobs (list, get, delete, requeue, cancel), /api/recurring (list, get, put, delete, trigger), /health and
+    /// /health/details. Opt-in.
     public static IEndpointRouteBuilder MapBackgroundJobsApi(this IEndpointRouteBuilder app)
     {
         app.MapGet("/health", (JobServerHealthCheck health) => health.IsReady
@@ -98,8 +103,75 @@ public static class ManagementEndpoints
                 return Results.Accepted(value: new { jobId = jobId.ToString() });
             }));
 
+        var recurring = app.MapGroup("/api/recurring");
+
+        recurring.MapGet("/", async (IRecurringJobClient client, CancellationToken ct) =>
+            Results.Ok(new { items = (await client.ListAsync(ct)).Select(ToView) }));
+
+        recurring.MapGet("/{id}", (IRecurringJobClient client, string id, CancellationToken ct) =>
+            WithRecurring(async () => Results.Ok(ToView(await client.GetAsync(id, ct)))));
+
+        // Creates or replaces; the pending occurrence is kept when cron and time zone are unchanged.
+        recurring.MapPut("/{id}", async (IRecurringJobClient client, string id, HttpRequest http, CancellationToken ct) =>
+        {
+            try
+            {
+                var request = await JsonSerializer.DeserializeAsync<UpsertRecurringRequest>(http.Body, JsonSerializerOptions.Web, ct);
+                if (request?.Job == null || request.Cron == null) return Error(400, "job and cron are required");
+                if (request.Args.ValueKind != JsonValueKind.Object) return Error(400, "args must be an object");
+                var o = request.Options;
+                var options = new RecurringJobOptions
+                {
+                    TimeZone = request.TimeZone == null ? null : TimeZoneInfo.FindSystemTimeZoneById(request.TimeZone),
+                    Queue = o?.Queue,
+                    Priority = o?.Priority,
+                    MaxAttempts = o?.MaxAttempts,
+                    RetryDelay = o?.RetryDelayMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+                };
+                return Results.Ok(ToView(await client.UpsertAsync(id, request.Job, request.Cron, request.Args, options, ct)));
+            }
+            catch (Exception e) when (e is JsonException or ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                return Error(400, e.Message);
+            }
+        });
+
+        recurring.MapDelete("/{id}", (IRecurringJobClient client, string id, CancellationToken ct) =>
+            WithRecurring(async () =>
+            {
+                await client.RemoveAsync(id, ct);
+                return Results.Ok(new { id });
+            }));
+
+        recurring.MapPost("/{id}/trigger", (IRecurringJobClient client, string id, CancellationToken ct) =>
+            WithRecurring(async () => Results.Accepted(value: new { jobId = (await client.TriggerAsync(id, ct)).ToString() })));
+
         return app;
     }
+
+    private static async Task<IResult> WithRecurring(Func<Task<IResult>> action)
+    {
+        try { return await action(); }
+        catch (RecurringJobNotFoundException e) { return Error(404, e.Message); }
+    }
+
+    private static object ToView(RecurringJob r) => new
+    {
+        id = r.Id,
+        job = r.JobName,
+        cron = r.Cron,
+        timeZone = r.TimeZone,
+        args = r.Args,
+        queue = r.Queue,
+        priority = r.Priority,
+        maxAttempts = r.MaxAttempts,
+        retryDelayMs = (int)r.RetryDelay.TotalMilliseconds,
+        nextRunAt = r.NextRunAt,
+        lastRunAt = r.LastRunAt,
+        lastJobId = r.LastJobId?.ToString(),
+        createdAt = r.CreatedAt,
+        updatedAt = r.UpdatedAt,
+    };
 
     public static IResult Error(int status, string message) => Results.Json(new { error = message }, statusCode: status);
 

@@ -216,6 +216,37 @@ record JobAttempt(int Attempt, DateTime StartedAt, DateTime? FinishedAt, Attempt
 
 Datas em UTC (precisão de microssegundos, igual ao Postgres).
 
+### Jobs recorrentes (`IRecurringJobClient`)
+
+Uma definição recorrente tem um id estável e enfileira um job comum (com retry, fila, prioridade e histórico) a cada
+ocorrência de uma expressão cron. Declare no código — a definição é criada/atualizada a cada partida:
+
+```csharp
+builder.Services.AddBackgroundJobs(o => { /* ... */ }, jobs => jobs.Register<ReportJob, ReportArgs>("daily-report"))
+    .UsePostgres(connectionString)
+    .AddRecurringJob("daily-report", "daily-report", "0 9 * * MON-FRI", new ReportArgs("vendas"),
+        new RecurringJobOptions { TimeZone = TimeZoneInfo.FindSystemTimeZoneById("America/Sao_Paulo"), Queue = "reports" });
+```
+
+ou em tempo de execução, via `IRecurringJobClient`:
+
+| Método | Efeito | Erros |
+|---|---|---|
+| `UpsertAsync<TArgs>(id, jobName, cron, args, RecurringJobOptions?, ct)` | Cria ou substitui. Mantém a próxima ocorrência se cron e fuso não mudaram | `ArgumentException` (id, cron, fuso/opções inválidos ou cron que nunca dispara) |
+| `GetAsync(id)` / `ListAsync()` | `RecurringJob` (`NextRunAt`, `LastRunAt`, `LastJobId`, ...) | `RecurringJobNotFoundException` |
+| `RemoveAsync(id)` | Para as próximas ocorrências; jobs já criados ficam | `RecurringJobNotFoundException` |
+| `TriggerAsync(id)` | Enfileira um job agora, sem mexer na próxima ocorrência | `RecurringJobNotFoundException` |
+
+- **Cron:** 5 campos (`minuto hora dia mês dia-da-semana`) ou 6 com segundos na frente. `*`, `?`, listas, faixas, passos
+  (`*/5`, `1-10/2`), nomes (`JAN`, `MON`), domingo = `0` ou `7`, e `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`.
+  Com dia do mês e dia da semana restritos, vale qualquer um dos dois (cron clássico). Sem `L`, `W` ou `#`.
+- **Fuso:** `RecurringJobOptions.TimeZone` (padrão UTC). Horários que caem no buraco do horário de verão são pulados; na
+  hora repetida, crons que rodam toda hora (`*/5 * * * *`) seguem nas duas passagens e os demais rodam só na primeira.
+- **Ocorrências perdidas** (nenhum servidor no ar): disparam **uma vez** quando um servidor volta, e a agenda segue a partir de agora.
+- **Sem sobreposição controlada:** cada ocorrência é um job independente; uma não espera a anterior terminar.
+- **Vários nós:** cada ocorrência gera exatamente um job (o disparo e o avanço de `next_run_at` são atômicos).
+- Ids: 1–100 caracteres `A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `:`. Remover `AddRecurringJob` do código não apaga a definição — use `RemoveAsync`.
+
 ## 5. Configuração
 
 `AddBackgroundJobs(Action<BackgroundJobsOptions>? configure = null, Action<JobRegistry>? registerJobs = null)` devolve um
@@ -372,7 +403,14 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 | `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` |
 | `POST /api/jobs/{id}/cancel` | `202 {"jobId":"..."}` (um job em `processing` passa a `cancelled` quando seu código para) | `404`, `409` |
 
+| `GET /api/recurring` | `200 {"items":[recorrente]}` | |
+| `GET /api/recurring/{id}` | `200` recorrente | `404` |
+| `PUT /api/recurring/{id}` | `200` recorrente. Corpo: `{"job","cron","args":{...},"timeZone"?,"options"?:{"queue","priority","maxAttempts","retryDelayMs"}}` | `400` |
+| `DELETE /api/recurring/{id}` | `200 {"id":"..."}` | `404` |
+| `POST /api/recurring/{id}/trigger` | `202 {"jobId":"..."}` | `404` |
+
 - Erros sempre no formato `{"error":"mensagem"}`. Id que não é Guid → `404`.
+- Recorrente: `id, job, cron, timeZone, args, queue, priority, maxAttempts, retryDelayMs, nextRunAt, lastRunAt, lastJobId, createdAt, updatedAt`.
 - `limit` padrão 1000; `nextCursor` só vem preenchido quando a página está cheia.
 - Job completo (ordem das chaves): `id, name, args, state, attempts, maxAttempts, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state,at,reason}], attemptHistory[{attempt,startedAt,finishedAt,outcome,error}]`. Datas ISO-8601 UTC com `Z`; `outcome` é `null` enquanto a tentativa roda.
 
@@ -460,7 +498,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 ## 11. Banco de dados
 
 - Migrations embutidas são aplicadas **automaticamente** na partida, numa transação protegida por advisory lock (seguro com vários nós subindo juntos). Controle em `bj_migrations`.
-- Tabelas: `bj_jobs`, `bj_attempts`, `bj_history` (+ sequence `bj_enqueue_seq`). O usuário do banco precisa de permissão de `CREATE` no schema na primeira execução.
+- Tabelas: `bj_jobs`, `bj_attempts`, `bj_history`, `bj_queue_consumers`, `bj_recurring` (+ sequence `bj_enqueue_seq`). O usuário do banco precisa de permissão de `CREATE` no schema na primeira execução.
 - **Não há limpeza automática** de jobs antigos. Se o volume for alto, crie uma rotina própria (ex.: apagar `succeeded` antigos — `bj_attempts`/`bj_history` referenciam `bj_jobs` por FK).
 
 ## 12. Operação: múltiplos nós, crash e shutdown

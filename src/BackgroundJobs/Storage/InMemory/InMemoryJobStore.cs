@@ -11,24 +11,28 @@ internal sealed class InMemoryJobStore : IJobStore
     private long _enqueueSeq;
     /// (node, queue) → alive until.
     private readonly Dictionary<(string Node, string Queue), DateTime> _consumers = [];
+    private readonly SortedDictionary<string, RecurringJob> _recurring = new(StringComparer.Ordinal);
 
     public Task MigrateAsync(CancellationToken ct) => Task.CompletedTask;
 
     public Task InsertAsync(NewJob job, CancellationToken ct)
     {
-        var creation = job.Creation;
-        lock (_lock)
-        {
-            var row = new Row
-            {
-                Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
-                MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
-                CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority,
-            };
-            Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
-            _jobs.Add(job.Id, row);
-        }
+        lock (_lock) InsertLocked(job);
         return Task.CompletedTask;
+    }
+
+    /// Callers hold the lock.
+    private void InsertLocked(NewJob job)
+    {
+        var creation = job.Creation;
+        var row = new Row
+        {
+            Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
+            MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
+            CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority,
+        };
+        Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
+        _jobs.Add(job.Id, row);
     }
 
     public Task<Job?> GetAsync(Guid id, CancellationToken ct)
@@ -207,6 +211,60 @@ internal sealed class InMemoryJobStore : IJobStore
             foreach (var id in doomed) _jobs.Remove(id);
             return Task.FromResult(doomed.Count);
         }
+    }
+
+    public Task<RecurringJob> UpsertRecurringAsync(RecurringDefinition d, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            var existing = _recurring.GetValueOrDefault(d.Id);
+            var keepNext = existing != null && existing.Cron == d.Cron && existing.TimeZone == d.TimeZone;
+            var stored = new RecurringJob(
+                d.Id, d.JobName, d.Cron, d.TimeZone, JsonDocument.Parse(d.ArgsJson).RootElement.Clone(), d.ArgsVersion, d.MaxAttempts,
+                TimeSpan.FromMilliseconds(d.RetryDelayMs), TimeSpan.FromMilliseconds(d.RetryJitterMs), d.Queue, d.Priority,
+                keepNext ? existing!.NextRunAt : d.NextRunAt, existing?.LastRunAt, existing?.LastJobId, existing?.CreatedAt ?? d.Now, d.Now);
+            _recurring[d.Id] = stored;
+            return Task.FromResult(stored);
+        }
+    }
+
+    public Task<RecurringJob?> GetRecurringAsync(string id, CancellationToken ct)
+    {
+        lock (_lock) return Task.FromResult(_recurring.GetValueOrDefault(id));
+    }
+
+    public Task<IReadOnlyList<RecurringJob>> ListRecurringAsync(CancellationToken ct)
+    {
+        lock (_lock) return Task.FromResult<IReadOnlyList<RecurringJob>>(_recurring.Values.ToList());
+    }
+
+    public Task<bool> RemoveRecurringAsync(string id, CancellationToken ct)
+    {
+        lock (_lock) return Task.FromResult(_recurring.Remove(id));
+    }
+
+    public Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, CancellationToken ct)
+    {
+        lock (_lock)
+            return Task.FromResult<IReadOnlyList<RecurringJob>>(
+                _recurring.Values.Where(r => r.NextRunAt <= now).OrderBy(r => r.NextRunAt).Take(limit).ToList());
+    }
+
+    public Task<DateTime?> NextRecurringAtAsync(CancellationToken ct)
+    {
+        lock (_lock) return Task.FromResult(_recurring.Values.Min(r => (DateTime?)r.NextRunAt));
+    }
+
+    public Task<bool> FireRecurringAsync(RecurringFire fire, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            if (!_recurring.TryGetValue(fire.RecurringId, out var r)) return Task.FromResult(false);
+            if (fire.Occurrence is { } occurrence && r.NextRunAt != occurrence) return Task.FromResult(false);
+            _recurring[r.Id] = r with { NextRunAt = fire.NextRunAt ?? r.NextRunAt, LastRunAt = fire.Job.Now, LastJobId = fire.Job.Id };
+            InsertLocked(fire.Job);
+        }
+        return Task.FromResult(true);
     }
 
     /// The shared mechanics of IJobStore, guarded by source state and version. Callers hold the lock.

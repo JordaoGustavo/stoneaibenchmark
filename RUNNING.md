@@ -19,6 +19,7 @@ dotnet run --project src/BackgroundJobs.Demo
 | `NODE_ID`      | nome da máquina                                                              |
 | `QUEUES`       | vazio = só `default` com `WORKER_COUNT` workers; ex. `default=4,critical=2`  |
 | `FIFO_CLAIM_EVERY` | `10`; `off` = prioridade estrita                                          |
+| `RECURRING_HEARTBEAT_CRON` | vazio; ex. `*/30 * * * * *` declara o recorrente `heartbeat` (job `log-message`) |
 
 `POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro).
 

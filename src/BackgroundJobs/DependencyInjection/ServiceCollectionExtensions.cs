@@ -22,6 +22,17 @@ public sealed class BackgroundJobsBuilder(IServiceCollection services)
         return this;
     }
 
+    /// Declares a recurring job, created or updated (<see cref="IRecurringJobClient.UpsertAsync"/>) every time the server
+    /// starts. Declarations removed from code are not deleted from the store: use <see cref="IRecurringJobClient.RemoveAsync"/>.
+    /// <exception cref="ArgumentException">Invalid id or cron.</exception>
+    public BackgroundJobsBuilder AddRecurringJob<TArgs>(string id, string jobName, string cron, TArgs args, RecurringJobOptions? options = null)
+    {
+        RecurringJobIds.Check(id);
+        if (!CronExpression.TryParse(cron, out _)) throw new ArgumentException($"recurring job '{id}': cron '{cron}' is invalid");
+        Services.AddSingleton(new RecurringSeed(id, (client, ct) => client.UpsertAsync(id, jobName, cron, args, options, ct)));
+        return this;
+    }
+
     /// No other node can change the in-memory store, so there is nothing to listen for.
     private sealed class NoListener : IJobStoreListener
     {
@@ -61,6 +72,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RetentionSweeper>();
         services.AddSingleton<JobsMetrics>();
         services.AddSingleton<IJobClient, JobClient>();
+        services.AddSingleton<IRecurringJobClient, RecurringJobClient>();
         services.AddSingleton<JobServer>();
         services.AddHostedService(sp => sp.GetRequiredService<JobServer>());
         services.AddSingleton(sp => new JobServerHealthCheck(

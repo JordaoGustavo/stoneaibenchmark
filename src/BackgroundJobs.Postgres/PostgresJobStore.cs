@@ -31,10 +31,16 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
     public async Task InsertAsync(NewJob job, CancellationToken ct)
     {
-        var creation = job.Creation;
-        var scheduled = creation.To == JobState.Scheduled;
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        await InsertJobAsync(conn, tx, job);
+        await tx.CommitAsync(ct);
+    }
+
+    private static async Task InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job)
+    {
+        var creation = job.Creation;
+        var scheduled = creation.To == JobState.Scheduled;
         await conn.ExecuteAsync("""
             INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
                                  run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority)
@@ -49,7 +55,6 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             }, tx);
         await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
         await NotifyAsync(conn, tx, creation.To);
-        await tx.CommitAsync(ct);
     }
 
     public async Task<Job?> GetAsync(Guid id, CancellationToken ct)
@@ -298,6 +303,82 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             """, new { finishedBefore, limit });
     }
 
+    private const string RecurringColumns =
+        "id, job_name, cron, time_zone, args::text AS args_json, args_version, max_attempts, retry_delay_ms, retry_jitter_ms, " +
+        "queue, priority, next_run_at, last_run_at, last_job_id, created_at, updated_at";
+
+    public async Task<RecurringJob> UpsertRecurringAsync(RecurringDefinition d, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var row = await conn.QuerySingleAsync<RecurringRow>($"""
+            INSERT INTO bj_recurring AS r (id, job_name, cron, time_zone, args, args_version, max_attempts, retry_delay_ms,
+                                           retry_jitter_ms, queue, priority, next_run_at, created_at, updated_at)
+            VALUES (@Id, @JobName, @Cron, @TimeZone, @ArgsJson::jsonb, @ArgsVersion, @MaxAttempts, @RetryDelayMs,
+                    @RetryJitterMs, @Queue, @Priority, @NextRunAt, @Now, @Now)
+            ON CONFLICT (id) DO UPDATE SET
+                job_name = excluded.job_name, args = excluded.args, args_version = excluded.args_version,
+                max_attempts = excluded.max_attempts, retry_delay_ms = excluded.retry_delay_ms,
+                retry_jitter_ms = excluded.retry_jitter_ms, queue = excluded.queue, priority = excluded.priority,
+                next_run_at = CASE WHEN r.cron = excluded.cron AND r.time_zone = excluded.time_zone THEN r.next_run_at
+                                   ELSE excluded.next_run_at END,
+                cron = excluded.cron, time_zone = excluded.time_zone, updated_at = excluded.updated_at
+            RETURNING {RecurringColumns}
+            """, d, tx);
+        await NotifyAsync(conn, tx, JobState.Scheduled);
+        await tx.CommitAsync(ct);
+        return row.ToRecurringJob();
+    }
+
+    public async Task<RecurringJob?> GetRecurringAsync(string id, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        var row = await conn.QuerySingleOrDefaultAsync<RecurringRow>($"SELECT {RecurringColumns} FROM bj_recurring WHERE id = @id", new { id });
+        return row?.ToRecurringJob();
+    }
+
+    public async Task<IReadOnlyList<RecurringJob>> ListRecurringAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<RecurringRow>($"SELECT {RecurringColumns} FROM bj_recurring ORDER BY id COLLATE \"C\"");
+        return rows.Select(r => r.ToRecurringJob()).ToList();
+    }
+
+    public async Task<bool> RemoveRecurringAsync(string id, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        return await conn.ExecuteAsync("DELETE FROM bj_recurring WHERE id = @id", new { id }) > 0;
+    }
+
+    public async Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<RecurringRow>(
+            $"SELECT {RecurringColumns} FROM bj_recurring WHERE next_run_at <= @now ORDER BY next_run_at LIMIT @limit", new { now, limit });
+        return rows.Select(r => r.ToRecurringJob()).ToList();
+    }
+
+    public async Task<DateTime?> NextRecurringAtAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<DateTime?>("SELECT min(next_run_at) FROM bj_recurring");
+    }
+
+    public async Task<bool> FireRecurringAsync(RecurringFire fire, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        // The row lock serializes nodes firing the same occurrence; the loser sees next_run_at moved and writes nothing.
+        var updated = await conn.ExecuteAsync("""
+            UPDATE bj_recurring SET next_run_at = COALESCE(@NextRunAt, next_run_at), last_run_at = @now, last_job_id = @jobId
+            WHERE id = @RecurringId AND (@Occurrence::timestamptz IS NULL OR next_run_at = @Occurrence::timestamptz)
+            """, new { fire.RecurringId, fire.Occurrence, fire.NextRunAt, now = fire.Job.Now, jobId = fire.Job.Id }, tx);
+        if (updated == 0) return false;
+        await InsertJobAsync(conn, tx, fire.Job);
+        await tx.CommitAsync(ct);
+        return true;
+    }
+
     private static string[] Wire(IEnumerable<JobState> states) => states.Select(s => s.ToWire()).ToArray();
 
     /// Delivered on commit; Postgres folds identical notifications within a transaction.
@@ -326,6 +407,31 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public DateTime? RunAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+    }
+
+    private sealed class RecurringRow
+    {
+        public string Id { get; set; } = "";
+        public string JobName { get; set; } = "";
+        public string Cron { get; set; } = "";
+        public string TimeZone { get; set; } = "";
+        public string ArgsJson { get; set; } = "";
+        public int ArgsVersion { get; set; }
+        public int MaxAttempts { get; set; }
+        public int RetryDelayMs { get; set; }
+        public int RetryJitterMs { get; set; }
+        public string Queue { get; set; } = "";
+        public int Priority { get; set; }
+        public DateTime NextRunAt { get; set; }
+        public DateTime? LastRunAt { get; set; }
+        public Guid? LastJobId { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+
+        public RecurringJob ToRecurringJob() => new(
+            Id, JobName, Cron, TimeZone, JsonDocument.Parse(ArgsJson).RootElement.Clone(), ArgsVersion, MaxAttempts,
+            TimeSpan.FromMilliseconds(RetryDelayMs), TimeSpan.FromMilliseconds(RetryJitterMs), Queue, Priority, NextRunAt, LastRunAt,
+            LastJobId, CreatedAt, UpdatedAt);
     }
 
     private sealed class HistoryRow

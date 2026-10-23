@@ -33,6 +33,17 @@ public enum ClaimOrder { Priority, Fifo }
 public sealed record ClaimRequest(
     string Queue, ClaimOrder Order, string NodeId, DateTime Now, DateTime LeaseUntil, int Limit, IReadOnlyCollection<string> ExcludedNames);
 
+/// A recurring definition as written by <see cref="IJobStore.UpsertRecurringAsync"/>. NextRunAt is the occurrence computed
+/// from <see cref="Now"/>; the store keeps the stored one instead when Cron and TimeZone did not change.
+public sealed record RecurringDefinition(
+    string Id, string JobName, string Cron, string TimeZone, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs,
+    int RetryJitterMs, string Queue, int Priority, DateTime NextRunAt, DateTime Now);
+
+/// Creates <see cref="Job"/> for recurring definition <see cref="RecurringId"/>. A scheduled fire (<see cref="Occurrence"/> set)
+/// applies only while the definition's next_run_at still equals it, and moves next_run_at to <see cref="NextRunAt"/>; a
+/// manual trigger (null) leaves next_run_at alone. Either way it sets last_run_at = Job.Now and last_job_id = Job.Id.
+public sealed record RecurringFire(string RecurringId, DateTime? Occurrence, DateTime? NextRunAt, NewJob Job);
+
 /// Wakes this node's loops when another node changes the store (this node's own changes wake them already).
 /// Stores that only live in this process need none.
 public interface IJobStoreListener
@@ -128,6 +139,29 @@ public interface IJobStore
     /// Applies a user transition (<see cref="JobTransition.Delete"/>, <see cref="JobTransition.Requeue"/>).
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
     Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct);
+
+    /// Inserts or replaces a recurring definition, keeping created_at and last run, and next_run_at when cron and time
+    /// zone are unchanged. Returns the stored definition. Wakes the schedulers of every node.
+    Task<RecurringJob> UpsertRecurringAsync(RecurringDefinition definition, CancellationToken ct);
+
+    Task<RecurringJob?> GetRecurringAsync(string id, CancellationToken ct);
+
+    /// Ordered by id.
+    Task<IReadOnlyList<RecurringJob>> ListRecurringAsync(CancellationToken ct);
+
+    /// False when there was no such definition.
+    Task<bool> RemoveRecurringAsync(string id, CancellationToken ct);
+
+    /// Up to <paramref name="limit"/> definitions whose next_run_at is at or before <paramref name="now"/>, earliest first.
+    Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, CancellationToken ct);
+
+    /// Earliest next_run_at among recurring definitions, or null when none.
+    Task<DateTime?> NextRecurringAtAsync(CancellationToken ct);
+
+    /// Applies <paramref name="fire"/> and inserts its job (as <see cref="InsertAsync"/>) in one atomic step, so that of
+    /// several nodes firing the same occurrence exactly one creates a job. False when the definition is gone or, for a
+    /// scheduled fire, another node fired that occurrence already; nothing is written then.
+    Task<bool> FireRecurringAsync(RecurringFire fire, CancellationToken ct);
 
     /// Removes, with their history and attempts, up to <paramref name="limit"/> jobs in a
     /// <see cref="JobStateWire.Finished"/> state last updated before <paramref name="finishedBefore"/>. Returns how many.
