@@ -109,6 +109,12 @@ public sealed class JobRegistry
 
     internal JobRegistration? Find(string name) => _jobs.GetValueOrDefault(name);
 
+    /// <summary>
+    /// The options <paramref name="name"/> was registered with (timeout, concurrency, circuit breaker, args version), or
+    /// null when the name is not registered. For display: changing them after the host starts is not supported.
+    /// </summary>
+    public JobRegistrationOptions? GetOptions(string name) => Find(name)?.Options;
+
     internal IEnumerable<JobRegistration> All => _jobs.Values;
 
     /// <summary>

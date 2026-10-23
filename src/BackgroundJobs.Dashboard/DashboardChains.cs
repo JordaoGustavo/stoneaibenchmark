@@ -29,6 +29,10 @@ public static partial class DashboardEndpoints
             if (IsCrossSite(http)) return Page(http, 403, "Forbidden", Alert("Cross-site request rejected."), basePath);
             var form = await http.Request.ReadFormAsync(ct);
             var steps = ReadSteps(form);
+            // "Add step" on the single-job form: that job, with everything typed, becomes step 1.
+            if (form["single"].LastOrDefault() is { Length: > 0 } single && steps.Count == 0)
+                steps.Add(new ChainStep(single, OnSucceeded, form.Where(kv => kv.Key.StartsWith("arg.", StringComparison.Ordinal) || kv.Key.StartsWith("opt.", StringComparison.Ordinal))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value)));
             var afterValue = form["after.id"].LastOrDefault() ?? "";
             var parent = await FindParentAsync(client, afterValue, ct);
             var op = form["op"].LastOrDefault() ?? "";
@@ -77,7 +81,7 @@ public static partial class DashboardEndpoints
         var (parentId, firstCondition) = await ParseRunAfterAsync(client, form, "after.", errors, ct);
         if (steps.Count == 0) errors.Add("Add at least one step.");
 
-        var prepared = new List<(string Name, object Args, ContinuationCondition Condition)>();
+        var prepared = new List<(string Name, object Args, JobOptions? Options, ContinuationCondition Condition)>();
         for (var i = 0; i < steps.Count; i++)
         {
             var step = steps[i];
@@ -87,8 +91,9 @@ public static partial class DashboardEndpoints
             else
             {
                 var args = DashboardForms.Parse(reg.ArgsType, form, tz, stepErrors, scope: $"s{i}.");
+                var options = ParseOptions(http, form, tz, stepErrors, $"s{i}.opt.");
                 var condition = i == 0 ? firstCondition : ParseCondition(step.Condition, stepErrors);
-                prepared.Add((step.Job, args, condition));
+                prepared.Add((step.Job, args, options, condition));
             }
             if (stepErrors.Count == 0) continue;
             invalid[i] = stepErrors;
@@ -100,9 +105,9 @@ public static partial class DashboardEndpoints
         Guid? previous = parentId;
         try
         {
-            foreach (var (name, args, condition) in prepared)
+            foreach (var (name, args, stepOptions, condition) in prepared)
             {
-                var options = previous is null ? null : new JobOptions { ContinueAfter = previous, Condition = condition };
+                var options = previous is null ? stepOptions : (stepOptions ?? new JobOptions()) with { ContinueAfter = previous, Condition = condition };
                 previous = await client.EnqueueAsync(name, args, options, ct);
                 created.Add(previous.Value);
             }
@@ -133,7 +138,7 @@ public static partial class DashboardEndpoints
             var job = form[scope + "job"].LastOrDefault();
             if (string.IsNullOrEmpty(job)) continue;
             // Kept without the step prefix, so a step re-renders under its new index after a move.
-            var values = form.Where(kv => kv.Key.StartsWith(scope + "arg.", StringComparison.Ordinal))
+            var values = form.Where(kv => kv.Key.StartsWith(scope + "arg.", StringComparison.Ordinal) || kv.Key.StartsWith(scope + "opt.", StringComparison.Ordinal))
                 .ToDictionary(kv => kv.Key[scope.Length..], kv => kv.Value);
             steps.Add(new ChainStep(job, form[scope + "cond"].LastOrDefault() ?? OnSucceeded, values));
         }
@@ -183,22 +188,34 @@ public static partial class DashboardEndpoints
             {
                 IFormCollection? values = step.Values is null ? null
                     : new FormCollection(step.Values.ToDictionary(kv => scope + kv.Key, kv => kv.Value));
-                body.Append(DashboardForms.Render(reg.ArgsType, values, tz, scope));
+                body.Append(DashboardForms.Render(reg.ArgsType, values, tz, scope)).Append(OptionsFields(http, step.Job, values, tz, scope + "opt.", $"o{i}-"));
             }
             body.Append("</div></div></li>");
         }
 
         body.Append(Rail);
-        body.Append("<li class=\"step\"><span class=\"dot ghost\">+</span><div class=\"addstep\"><label for=\"add-job\"><b>")
-            .Append(steps.Count == 0 ? "First step" : "Next step").Append("</b></label><select id=\"add-job\" name=\"add.job\">");
-        foreach (var (name, _) in registry.Registrations) body.Append("<option value=\"").Append(E(name)).Append("\">").Append(E(name)).Append("</option>");
-        body.Append("</select><button class=\"btn outline\" type=\"submit\" name=\"op\" value=\"add\" formnovalidate")
-            .Append(steps.Count >= MaxChainSteps || registry.Registrations.Count == 0 ? " disabled" : "").Append(">Add step</button></div></li></ol>");
+        body.Append("<li class=\"step\"><span class=\"dot ghost\">+</span>").Append(AddStepRow(basePath, registry, steps.Count, null)).Append("</li></ol>");
 
         body.Append("<div class=\"chainfoot\"><p class=\"muted\">").Append(steps.Count == 0 ? "No steps yet." : $"{steps.Count} step{(steps.Count == 1 ? "" : "s")}.")
             .Append(" Every step is validated before anything is enqueued.</p><div class=\"actions\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
             .Append("<button class=\"btn\" type=\"submit\" name=\"op\" value=\"enqueue\"").Append(steps.Count == 0 ? " disabled" : "").Append(">Enqueue chain</button></div></div></form>");
         return Page(http, status, "Build a chain", body.ToString(), basePath);
+    }
+
+    /// <summary>
+    /// The dashed "Next step" row. On the single-job form (<paramref name="single"/>) it posts the whole form to the chain
+    /// builder, where that job becomes step 1.
+    /// </summary>
+    private static string AddStepRow(string basePath, JobRegistry registry, int steps, string? single)
+    {
+        var sb = new StringBuilder("<div class=\"addstep\">");
+        if (single != null) sb.Append("<input type=\"hidden\" name=\"single\" value=\"").Append(E(single)).Append("\">");
+        sb.Append("<label for=\"add-job\"><b>").Append(steps == 0 ? "First step" : "Next step").Append("</b>")
+          .Append(single != null ? " <span class=\"muted\">run another job after this one</span>" : "").Append("</label><select id=\"add-job\" name=\"add.job\">");
+        foreach (var (name, _) in registry.Registrations) sb.Append("<option value=\"").Append(E(name)).Append("\">").Append(E(name)).Append("</option>");
+        sb.Append("</select><button class=\"btn outline\" type=\"submit\" name=\"op\" value=\"add\" formnovalidate");
+        if (single != null) sb.Append(" formaction=\"").Append(basePath).Append("/chain\"");
+        return sb.Append(steps >= MaxChainSteps || registry.Registrations.Count == 0 ? " disabled" : "").Append(">Add step</button></div>").ToString();
     }
 
     private const string Rail = "<li class=\"link\" aria-hidden=\"true\"><span class=\"rail\"></span><span></span></li>";
@@ -353,7 +370,7 @@ public static partial class DashboardEndpoints
         .seg label:has(input:checked) span{background:var(--background);color:var(--foreground);box-shadow:0 1px 2px rgb(0 0 0/.12)}
         .seg label:has(input:focus-visible) span{outline:2px solid var(--foreground);outline-offset:1px}
         .stephead{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 8px 8px 16px;border-bottom:1px solid var(--border)}
-        .stephead .actions{gap:2px}.stepbody{padding:16px;display:flex;flex-direction:column;gap:14px}
+        .stephead .actions{gap:2px}.stepbody{padding:16px;display:flex;flex-direction:column;gap:14px}.stepbody .opts{border-top:1px solid var(--border);padding-top:12px}
         .steperr{margin:0;padding:8px 12px 8px 28px;border-radius:var(--radius);color:var(--destructive);border:1px solid var(--destructive);font-size:13px}
         .addstep{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px dashed var(--border);border-radius:calc(var(--radius) + 4px);padding:12px 16px;margin-top:4px}
         .addstep select{flex:1 1 180px}

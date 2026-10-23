@@ -143,7 +143,7 @@ public static partial class DashboardEndpoints
             var errors = new List<string>();
             var tz = Zone(http);
             var args = DashboardForms.Parse(reg.ArgsType, form, tz, errors);
-            var options = ParseOptions(form, tz, errors);
+            var options = ParseOptions(http, form, tz, errors, "opt.");
             var (parentId, condition) = await ParseRunAfterAsync(client, form, "after.", errors, ct);
             if (errors.Count > 0) return await TriggerPage(http, basePath, registry, client, name, form, errors, null, ct);
             if (parentId != null) options = (options ?? new JobOptions()) with { ContinueAfter = parentId, Condition = condition };
@@ -299,7 +299,6 @@ public static partial class DashboardEndpoints
         var afterValue = posted?["after.id"].LastOrDefault() ?? after ?? "";
         var parent = await FindParentAsync(client, afterValue, ct);
         var argsType = registry.Registrations.First(r => r.Name == name).ArgsType;
-        string Posted(string key) => E(posted?[key].LastOrDefault() ?? "");
         var body = new StringBuilder(BackToTrigger(basePath));
         body.Append("<div class=\"head\"><div><h1>").Append(E(name)).Append("</h1><p class=\"muted\">Arguments are validated against <span class=\"mono\">")
             .Append(E(argsType.Name)).Append("</span> before the job is enqueued.</p></div></div>");
@@ -307,91 +306,16 @@ public static partial class DashboardEndpoints
             body.Append("<div class=\"alert\"><b>Could not enqueue</b><ul>").Append(string.Concat(errors.Select(e => $"<li>{E(e)}</li>"))).Append("</ul></div>");
 
         body.Append("<form class=\"card pad form\" method=\"post\" action=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append("\">")
+            // Enter submits the first button: keep that "enqueue", not the "Add step" further down.
+            .Append("<button class=\"sr-only\" type=\"submit\" tabindex=\"-1\" aria-hidden=\"true\"></button>")
             .Append("<fieldset><legend>Arguments</legend>").Append(DashboardForms.Render(argsType, posted, Zone(http))).Append("</fieldset>")
             .Append(RunAfterSection(basePath, "after.", afterValue, parent, posted?["after.condition"].LastOrDefault()))
-            .Append("<details class=\"opts\"><summary>Options</summary><p class=\"muted\">Leave blank to use the server defaults.</p><div class=\"row\">")
-            .Append("<div class=\"field\"><label for=\"o-runAt\">Run at <span class=\"muted\">(").Append(E(DashboardForms.ZoneLabel(Zone(http)))).Append(")</span></label><input type=\"datetime-local\" step=\"1\" id=\"o-runAt\" name=\"opt.runAt\" value=\"").Append(Posted("opt.runAt")).Append("\"></div>")
-            .Append("<div class=\"field\"><label for=\"o-max\">Max attempts</label><input type=\"number\" min=\"1\" step=\"1\" id=\"o-max\" name=\"opt.maxAttempts\" value=\"").Append(Posted("opt.maxAttempts")).Append("\"></div>")
-            .Append("<div class=\"field\"><label for=\"o-delay\">Retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-delay\" name=\"opt.retryDelayMs\" value=\"").Append(Posted("opt.retryDelayMs")).Append("\"></div>")
-            .Append("<div class=\"field\"><label for=\"o-jitter\">Retry jitter (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-jitter\" name=\"opt.retryJitterMs\" value=\"").Append(Posted("opt.retryJitterMs")).Append("\"></div>")
-            .Append("</div><div class=\"row\">")
-            .Append("<div class=\"field\"><label for=\"o-backoff\">Retry backoff</label><select id=\"o-backoff\" name=\"opt.retryBackoff\">")
-            .Append(BackoffOption("", "Server default", posted)).Append(BackoffOption("fixed", "Fixed", posted)).Append(BackoffOption("exponential", "Exponential", posted))
-            .Append("</select></div>")
-            .Append("<div class=\"field\"><label for=\"o-mult\">Backoff multiplier</label><input type=\"number\" min=\"1\" max=\"100\" step=\"any\" id=\"o-mult\" name=\"opt.retryBackoffMultiplier\" value=\"").Append(Posted("opt.retryBackoffMultiplier")).Append("\"></div>")
-            .Append("<div class=\"field\"><label for=\"o-cap\">Max retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-cap\" name=\"opt.maxRetryDelayMs\" value=\"").Append(Posted("opt.maxRetryDelayMs")).Append("\"></div>")
-            .Append("</div></details><div class=\"actions end\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
+            .Append(OptionsFields(http, name, posted, Zone(http), "opt.", "o-"))
+            .Append(AddStepRow(basePath, registry, steps: 1, single: name))
+            .Append("<div class=\"actions end\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
             .Append("<button class=\"btn\" type=\"submit\">").Append(parent is null ? "Enqueue job" : "Enqueue continuation").Append("</button></div></form>");
         return Page(http, errors.Count > 0 ? 400 : 200, name, body.ToString(), basePath);
     }
-
-    private static JobOptions? ParseOptions(IFormCollection form, TimeZoneInfo tz, List<string> errors)
-    {
-        string? Get(string key) => form[key].LastOrDefault() is { Length: > 0 } v ? v.Trim() : null;
-        DateTimeOffset? runAt = null;
-        int? maxAttempts = null;
-        TimeSpan? retryDelay = null;
-        if (Get("opt.runAt") is { } r)
-        {
-            if (!DateTime.TryParse(r, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) errors.Add("Run at: a date and time expected, e.g. 2030-01-31 09:00.");
-            else
-            {
-                try { runAt = new DateTimeOffset(DashboardForms.ToUtc(d, tz), TimeSpan.Zero); }
-                catch (ArgumentException) { errors.Add($"Run at: {r} does not exist in {tz.Id} (daylight-saving change); pick a time outside the skipped hour."); }
-            }
-        }
-        if (Get("opt.maxAttempts") is { } m)
-        {
-            if (int.TryParse(m, out var n) && n >= 1) maxAttempts = n;
-            else errors.Add("Max attempts must be a whole number of at least 1.");
-        }
-        if (Get("opt.retryDelayMs") is { } ms)
-        {
-            if (int.TryParse(ms, out var n) && n >= 0) retryDelay = TimeSpan.FromMilliseconds(n);
-            else errors.Add("Retry delay must be a whole number of milliseconds, 0 or more.");
-        }
-        TimeSpan? retryJitter = null;
-        if (Get("opt.retryJitterMs") is { } jms)
-        {
-            if (int.TryParse(jms, out var n) && n >= 0) retryJitter = TimeSpan.FromMilliseconds(n);
-            else errors.Add("Retry jitter must be a whole number of milliseconds, 0 or more.");
-        }
-        RetryBackoff? backoff = Get("opt.retryBackoff") switch
-        {
-            null => null,
-            "fixed" => RetryBackoff.Fixed,
-            "exponential" => RetryBackoff.Exponential,
-            var other => Invalid(errors, $"Retry backoff \"{other}\" is unknown; pick fixed or exponential."),
-        };
-        double? multiplier = null;
-        if (Get("opt.retryBackoffMultiplier") is { } mult)
-        {
-            if (double.TryParse(mult, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) && double.IsFinite(f) && f >= 1 && f <= 100) multiplier = f;
-            else errors.Add("Backoff multiplier must be a number from 1 to 100.");
-        }
-        TimeSpan? maxRetryDelay = null;
-        if (Get("opt.maxRetryDelayMs") is { } cms)
-        {
-            if (int.TryParse(cms, out var n) && n >= 0) maxRetryDelay = TimeSpan.FromMilliseconds(n);
-            else errors.Add("Max retry delay must be a whole number of milliseconds, 0 or more.");
-        }
-        if (runAt is null && maxAttempts is null && retryDelay is null && retryJitter is null && backoff is null && multiplier is null && maxRetryDelay is null)
-            return null;
-        return new JobOptions
-        {
-            RunAt = runAt, MaxAttempts = maxAttempts, RetryDelay = retryDelay, RetryJitter = retryJitter,
-            RetryBackoff = backoff, RetryBackoffMultiplier = multiplier, MaxRetryDelay = maxRetryDelay,
-        };
-    }
-
-    private static RetryBackoff? Invalid(List<string> errors, string error)
-    {
-        errors.Add(error);
-        return null;
-    }
-
-    private static string BackoffOption(string value, string label, IFormCollection? posted) =>
-        $"<option value=\"{value}\"{((posted?["opt.retryBackoff"].LastOrDefault() ?? "") == value ? " selected" : "")}>{label}</option>";
 
     private sealed record Run(List<JobHistoryEntry> Events, List<JobAttempt> Attempts);
 
@@ -715,5 +639,5 @@ public static partial class DashboardEndpoints
         .check{display:flex;gap:8px;align-items:center}.hint{color:var(--muted-foreground);margin:0;font-size:11px}
         .opts summary{cursor:pointer;font-weight:600}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:12px}
         .actions.end{justify-content:flex-end}.alert ul{margin:6px 0 0;padding-left:18px}
-        """ + ChainCss;
+        """ + ChainCss + OptionsCss;
 }

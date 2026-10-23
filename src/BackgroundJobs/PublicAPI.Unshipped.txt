@@ -69,3 +69,4 @@ BackgroundJobs.Job.RetryJitter.init -> void
 BackgroundJobs.JobSummary.ContinueAfter.get -> System.Guid?
 BackgroundJobs.JobSummary.ContinueAfter.init -> void
 BackgroundJobs.Storage.IJobStore.ListContinuationsAsync(System.Guid parentId, System.Guid? after, int limit, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobSummary!>!>!
+BackgroundJobs.JobRegistry.GetOptions(string! name) -> BackgroundJobs.JobRegistrationOptions?
