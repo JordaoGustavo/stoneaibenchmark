@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using BackgroundJobs.Demo.Events;
 using BackgroundJobs.Demo.Jobs;
+using BackgroundJobs.Demo.Telemetry;
 
 namespace BackgroundJobs.Demo.Endpoints;
 
@@ -25,6 +26,12 @@ public static class DemoEndpoints
     public static IEndpointRouteBuilder MapDemoEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/demo/events", (EventLog events) => Results.Ok(new { items = events.All() }));
+
+        app.MapGet("/demo/telemetry", (TelemetryRecorder telemetry) =>
+        {
+            var (spans, measurements) = telemetry.Snapshot();
+            return Results.Ok(new { spans, measurements });
+        });
 
         app.MapPost("/demo/jobs", async (HttpRequest http, IJobClient jobs, CancellationToken ct) =>
         {

@@ -2,6 +2,7 @@ using BackgroundJobs;
 using BackgroundJobs.Demo.Endpoints;
 using BackgroundJobs.Demo.Events;
 using BackgroundJobs.Demo.Jobs;
+using BackgroundJobs.Demo.Telemetry;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,16 +13,25 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = Timeout.InfiniteTimeSpan);
 
 builder.Services.AddSingleton<EventLog>();
+// Created eagerly so it is listening before the first job runs.
+var telemetry = new TelemetryRecorder();
+builder.Services.AddSingleton(telemetry);
+// Off unless set: lets tests see the per-type breaker in the health report.
+var failBreaker = int.TryParse(Env("FAIL_BREAKER_THRESHOLD", ""), out var threshold)
+    ? new CircuitBreakerOptions(threshold, TimeSpan.FromSeconds(int.Parse(Env("FAIL_BREAKER_SECONDS", "30"))))
+    : null;
 builder.Services.AddBackgroundJobs(
     o =>
     {
         o.ConnectionString = ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs"));
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
         o.NodeId = Env("NODE_ID", Environment.MachineName);
+        o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
+        o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     jobs => jobs
         .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name)
-        .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name)
+        .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
         .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name));
 
 var app = builder.Build();

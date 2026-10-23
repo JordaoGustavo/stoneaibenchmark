@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IJobStore>(sp =>
             new PostgresJobStore(NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<BackgroundJobsOptions>>().Value.ConnectionString)));
+        services.AddMetrics();
         services.AddSingleton<Signals>();
         services.AddSingleton<StoreCircuitBreaker>();
         services.AddSingleton<JobCircuitBreaker>();
@@ -32,10 +33,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Dispatcher>();
         services.AddSingleton<Scheduler>();
         services.AddSingleton<LeaseHeartbeat>();
+        services.AddSingleton<QueueMonitor>();
+        services.AddSingleton<JobsMetrics>();
         services.AddSingleton<IJobClient, JobClient>();
         services.AddSingleton<JobServer>();
         services.AddHostedService(sp => sp.GetRequiredService<JobServer>());
-        services.AddSingleton(sp => new JobServerHealthCheck(sp.GetRequiredService<JobServer>()));
+        services.AddSingleton(sp => new JobServerHealthCheck(
+            sp.GetRequiredService<JobServer>(), sp.GetRequiredService<JobCircuitBreaker>(), sp.GetRequiredService<QueueMonitor>(),
+            sp.GetRequiredService<IOptions<BackgroundJobsOptions>>(), sp.GetRequiredService<TimeProvider>()));
         return services;
     }
 }

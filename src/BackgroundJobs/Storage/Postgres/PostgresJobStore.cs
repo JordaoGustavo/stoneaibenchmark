@@ -119,10 +119,17 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 SELECT id, 'processing', @now, @reason FROM claimed
             )
             SELECT id, name, args::text AS args_json, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
-                   version, @attemptId AS attempt_id
+                   version, @attemptId AS attempt_id, run
             FROM claimed
             """,
             new { nodeId, now, leaseUntil, excluded = excludedNames.ToArray(), attemptId = Guid.CreateVersion7(), reason = Reasons.Claimed });
+    }
+
+    public async Task<QueueStats> QueueStatsAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        return await conn.QuerySingleAsync<QueueStats>(
+            "SELECT count(*) AS ready, min(enqueued_at) AS oldest_ready_at FROM bj_jobs WHERE state = 'enqueued'");
     }
 
     public Task<bool> SucceedAsync(ClaimedJob job, string nodeId, DateTime finishedAt, CancellationToken ct) =>

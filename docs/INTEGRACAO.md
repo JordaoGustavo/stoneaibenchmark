@@ -15,7 +15,7 @@ Biblioteca .NET para execução de jobs em segundo plano persistidos em PostgreS
 7. [Retry, FIFO, workers e circuit breaker](#7-retry-fifo-workers-e-circuit-breaker)
 8. [API HTTP (opcional)](#8-api-http-opcional)
 9. [Dashboard (opcional)](#9-dashboard-opcional)
-10. [Health check](#10-health-check)
+10. [Health check e observabilidade](#10-health-check-e-observabilidade)
 11. [Banco de dados](#11-banco-de-dados)
 12. [Operação: múltiplos nós, crash e shutdown](#12-operação-múltiplos-nós-crash-e-shutdown)
 13. [Limitações e boas práticas](#13-limitações-e-boas-práticas)
@@ -230,6 +230,7 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 | Método e rota | Sucesso | Erros |
 |---|---|---|
 | `GET /health` | `200 {"status":"ok"}` | `503 {"status":"unavailable"}` |
+| `GET /health/details` | `200` relatório (healthy/degraded) — ver [§10](#10-health-check-e-observabilidade) | `503` quando não está processando |
 | `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts"}],"nextCursor":"<id>"\|null}` | `400` |
 | `GET /api/jobs/{id}` | `200` job completo | `404` |
 | `DELETE /api/jobs/{id}` | `200 {"id":"...","state":"deleted"}` | `404`, `409` |
@@ -265,16 +266,58 @@ app.MapBackgroundJobsDashboard().RequireAuthorization("admin");
 
 > O filtro por estado varre a lista em ordem de id (até 10.000 jobs por página) por não haver índice por estado; em bases muito grandes pode ser lento.
 
-## 10. Health check
+## 10. Health check e observabilidade
 
-`JobServerHealthCheck` (registrado automaticamente) é de **readiness**: saudável apenas depois de migrar/recuperar e antes do pedido de parada.
+### Health check
+
+`JobServerHealthCheck` (registrado automaticamente):
+
+- **Unhealthy** fora do intervalo "migrou/recuperou" → "pedido de parada".
+- **Degraded** quando a fila está parada (algum job em `enqueued` há mais que `StalledQueueThreshold`, padrão 60 s) ou algum circuit breaker de job está `open` (`half-open` não degrada: já deixa passar um job de teste).
+- **Healthy** caso contrário. O `data` do resultado traz `ready`, `queue.*` e o estado de cada breaker.
 
 ```csharp
 builder.Services.AddHealthChecks().AddCheck<JobServerHealthCheck>("jobs");
 app.MapHealthChecks("/ready");
 ```
 
-Ou use o `/health` de `MapBackgroundJobsApi()`.
+Ou use as rotas de `MapBackgroundJobsApi()`: `/health` (readiness, contrato da spec) e `/health/details`:
+
+```json
+{
+  "status": "degraded", "ready": true,
+  "queue": { "ready": 12, "oldestReadyAgeSeconds": 74.2, "stalled": true, "stalledThresholdSeconds": 60, "sampledAt": "…Z" },
+  "circuitBreakers": [ { "job": "send-email", "state": "open", "consecutiveFailures": 5, "openUntil": "…Z" } ]
+}
+```
+
+A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
+
+### OpenTelemetry
+
+A biblioteca usa `ActivitySource` e `Meter` nativos com o nome `BackgroundJobsTelemetry.Name` (`"BackgroundJobs"`):
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource(BackgroundJobsTelemetry.Name))
+    .WithMetrics(m => m.AddMeter(BackgroundJobsTelemetry.Name));
+```
+
+- **Span por tentativa** `job <name>` (kind `Consumer`, raiz — o enqueue não propaga contexto). Tags: `job.id`, `job.name`, `job.attempt`, `job.max_attempts`, `job.run`, `job.outcome`; status `Error` com a exceção como evento quando falha.
+- **Métricas:**
+
+| Instrumento | Tipo | Unidade | Tags |
+|---|---|---|---|
+| `backgroundjobs.attempt.duration` | histogram | `s` | `job.name`, `outcome` |
+| `backgroundjobs.attempts` | counter | `{attempt}` | `job.name`, `outcome` (`succeeded`/`failed`) — taxa de falha = `failed / total` |
+| `backgroundjobs.queue.depth` | gauge | `{job}` | — jobs em `enqueued` |
+| `backgroundjobs.queue.oldest_age` | gauge | `s` | — idade do job mais antigo em `enqueued` (0 se vazia) |
+
+Os gauges vêm da mesma amostra do health check e são globais ao banco (todos os nós reportam o mesmo valor).
+
+### Logs estruturados
+
+Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILogger` — tem no scope `JobId`, `JobName`, `Attempt` e `Run`. Habilite scopes no seu provider (ex.: `Logging:Console:FormatterOptions:IncludeScopes=true`).
 
 ## 11. Banco de dados
 

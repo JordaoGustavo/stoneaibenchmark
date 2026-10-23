@@ -54,7 +54,7 @@ var id = await client.EnqueueAsync("greet", new GreetArgs("now"),
     new JobOptions { RunAt = DateTimeOffset.UtcNow.AddSeconds(2), MaxAttempts = 5 });
 ```
 
-A API HTTP de gerenciamento é opt-in: `app.MapBackgroundJobsApi()` (`/api/jobs` e `/health`).
+A API HTTP de gerenciamento é opt-in: `app.MapBackgroundJobsApi()` (`/api/jobs`, `/health` e `/health/details`).
 
 ## Comportamento além da spec / limitações
 
@@ -65,6 +65,7 @@ A API HTTP de gerenciamento é opt-in: `app.MapBackgroundJobsApi()` (`/api/jobs`
   recuperado e executado de novo enquanto a execução original ainda roda (at-least-once); o resultado da
   execução original é descartado pela checagem de `version`/`locked_by`.
 - Se o resultado de uma tentativa não puder ser gravado (banco fora), o job só é recuperado quando o lease vence.
-- Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo não usa.
+- Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo só usa em `fail-n-times` quando `FAIL_BREAKER_THRESHOLD` (e opcionalmente `FAIL_BREAKER_SECONDS`) está definido.
+- Observabilidade: `QUEUE_MONITOR_MS` e `STALLED_QUEUE_SECONDS` ajustam a amostragem da fila e o limite de fila parada; `GET /demo/telemetry` expõe spans e métricas capturados em memória (substituto de um exporter OpenTelemetry).
 - `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`; acima de 1000 jobs é preciso seguir o cursor.
 - A parada graciosa não tem limite de tempo; um `SIGTERM` com job longo espera o job terminar.

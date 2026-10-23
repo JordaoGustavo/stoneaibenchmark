@@ -19,7 +19,8 @@ public sealed class DemoProcess : IAsyncDisposable
         Api = new ApiClient(new Uri($"http://127.0.0.1:{port}"));
     }
 
-    public static async Task<DemoProcess> StartAsync(string connectionString, int workers = 4, int? port = null)
+    public static async Task<DemoProcess> StartAsync(
+        string connectionString, int workers = 4, int? port = null, IReadOnlyDictionary<string, string>? env = null)
     {
         port ??= FreePort();
         var psi = new ProcessStartInfo("dotnet", DemoDll())
@@ -32,6 +33,7 @@ public sealed class DemoProcess : IAsyncDisposable
         psi.Environment["WORKER_COUNT"] = workers.ToString();
         psi.Environment["DATABASE_URL"] = connectionString;
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+        foreach (var (key, value) in env ?? new Dictionary<string, string>()) psi.Environment[key] = value;
 
         var demo = new DemoProcess(Process.Start(psi)!, port.Value);
         demo._process.OutputDataReceived += (_, e) => { if (e.Data != null) lock (demo._output) demo._output.Add(e.Data); };

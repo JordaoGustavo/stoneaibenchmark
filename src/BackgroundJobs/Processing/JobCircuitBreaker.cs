@@ -1,5 +1,7 @@
 namespace BackgroundJobs.Processing;
 
+internal sealed record CircuitBreakerStatus(string Job, string State, int ConsecutiveFailures, DateTimeOffset? OpenUntil);
+
 /// Opt-in, in-memory, per job type. Open: the dispatcher does not claim the type.
 /// After the break it lets exactly one trial job through (half-open) before closing again.
 internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
@@ -30,6 +32,23 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
             }
             return blocked;
         }
+    }
+
+    /// Every job type with a breaker configured, closed ones included, ordered by name.
+    public IReadOnlyList<CircuitBreakerStatus> Snapshot()
+    {
+        var now = time.GetUtcNow();
+        lock (_lock)
+            return registry.All.Where(r => r.Options.CircuitBreaker != null).OrderBy(r => r.Name, StringComparer.Ordinal).Select(r =>
+            {
+                if (!_states.TryGetValue(r.Name, out var s)) return new CircuitBreakerStatus(r.Name, "closed", 0, null);
+                return s.Phase switch
+                {
+                    Phase.Open when now < s.OpenUntil => new CircuitBreakerStatus(r.Name, "open", s.Failures, s.OpenUntil),
+                    Phase.Closed => new CircuitBreakerStatus(r.Name, "closed", s.Failures, null),
+                    _ => new CircuitBreakerStatus(r.Name, "half-open", s.Failures, null),
+                };
+            }).ToList();
     }
 
     /// Called serially by the dispatcher right after a claim, so only one half-open trial is ever taken.

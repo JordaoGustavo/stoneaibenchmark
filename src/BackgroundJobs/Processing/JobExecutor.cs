@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using BackgroundJobs.Storage;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +12,7 @@ internal sealed class JobExecutor(
     IJobStore store,
     JobRegistry registry,
     JobCircuitBreaker jobBreaker,
+    JobsMetrics metrics,
     IServiceScopeFactory scopes,
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time,
@@ -18,8 +20,26 @@ internal sealed class JobExecutor(
 {
     public async Task ExecuteAsync(ClaimedJob job)
     {
-        var error = await InvokeAsync(job);
-        jobBreaker.OnFinished(job.Name, error == null);
+        // Everything logged during the attempt, the job's own logs included, carries these.
+        using var logScope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["JobId"] = job.Id, ["JobName"] = job.Name, ["Attempt"] = job.Attempt, ["Run"] = job.Run,
+        });
+        // One span per attempt; a root span, since enqueuing does not carry a trace context.
+        using var activity = BackgroundJobsTelemetry.Source.StartActivity($"job {job.Name}", ActivityKind.Consumer, parentContext: default);
+        activity?.SetTag("job.id", job.Id.ToString());
+        activity?.SetTag("job.name", job.Name);
+        activity?.SetTag("job.attempt", job.Attempt);
+        activity?.SetTag("job.max_attempts", job.MaxAttempts);
+        activity?.SetTag("job.run", job.Run);
+
+        var started = time.GetTimestamp();
+        var error = await InvokeAsync(job, activity);
+        var success = error == null;
+        metrics.AttemptFinished(job.Name, success, time.GetElapsedTime(started));
+        jobBreaker.OnFinished(job.Name, success);
+        activity?.SetTag("job.outcome", success ? "succeeded" : "failed");
+        if (!success) activity?.SetStatus(ActivityStatusCode.Error, error);
 
         var finishedAt = time.UtcNow();
         try
@@ -36,7 +56,7 @@ internal sealed class JobExecutor(
         }
     }
 
-    private async Task<string?> InvokeAsync(ClaimedJob job)
+    private async Task<string?> InvokeAsync(ClaimedJob job, Activity? activity)
     {
         var registration = registry.Find(job.Name);
         if (registration == null) return "unknown job";
@@ -49,6 +69,7 @@ internal sealed class JobExecutor(
         }
         catch (Exception e)
         {
+            activity?.AddException(e);
             // The stack trace goes in a scope: structured sinks keep it, the console shows one line.
             using (logger.BeginScope(new Dictionary<string, object> { ["Exception"] = e.ToString() }))
                 logger.LogInformation("job {JobId} attempt {Attempt} failed: {Error}", job.Id, job.Attempt, e.Message);

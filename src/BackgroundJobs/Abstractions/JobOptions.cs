@@ -30,10 +30,18 @@ public sealed class BackgroundJobsOptions
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan DefaultRetryJitter { get; set; } = TimeSpan.Zero;
 
+    /// How often the ready queue is sampled for metrics and the health check.
+    public TimeSpan QueueMonitorInterval { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// The health check reports a stalled queue when a job has been ready for longer than this.
+    public TimeSpan StalledQueueThreshold { get; set; } = TimeSpan.FromSeconds(60);
+
     internal void Validate()
     {
         if (string.IsNullOrWhiteSpace(ConnectionString)) throw new ArgumentException("ConnectionString is required");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
+        if (QueueMonitorInterval <= TimeSpan.Zero) throw new ArgumentException("QueueMonitorInterval must be positive");
+        if (StalledQueueThreshold <= TimeSpan.Zero) throw new ArgumentException("StalledQueueThreshold must be positive");
     }
 }

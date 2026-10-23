@@ -6,7 +6,10 @@ internal sealed record NewJob(
 /// A job this node just moved to processing, with its open attempt.
 internal sealed record ClaimedJob(
     Guid Id, string Name, string ArgsJson, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs,
-    int Version, Guid AttemptId);
+    int Version, Guid AttemptId, int Run);
+
+/// Jobs ready to run right now and when the oldest of them became ready.
+internal sealed record QueueStats(long Ready, DateTime? OldestReadyAt);
 
 internal interface IJobStore
 {
@@ -32,6 +35,8 @@ internal interface IJobStore
 
     /// Interrupts processing jobs whose lease expired (and, when given, every job held by <paramref name="ownNodeId"/>).
     Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct);
+
+    Task<QueueStats> QueueStatsAsync(CancellationToken ct);
 
     Task DeleteAsync(Guid id, DateTime now, CancellationToken ct);
     Task RequeueAsync(Guid id, DateTime now, CancellationToken ct);

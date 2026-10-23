@@ -3,18 +3,42 @@ using BackgroundJobs.Health;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace BackgroundJobs;
 
 public static class ManagementEndpoints
 {
-    /// Maps /api/jobs (list, get, delete, requeue) and /health. Opt-in.
+    /// Maps /api/jobs (list, get, delete, requeue), /health and /health/details. Opt-in.
     public static IEndpointRouteBuilder MapBackgroundJobsApi(this IEndpointRouteBuilder app)
     {
         app.MapGet("/health", (JobServerHealthCheck health) => health.IsReady
             ? Results.Ok(new { status = "ok" })
             : Results.Json(new { status = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable));
+
+        // 200 while healthy or degraded, 503 when not processing.
+        app.MapGet("/health/details", (JobServerHealthCheck health) =>
+        {
+            var r = health.Report();
+            return Results.Json(new
+            {
+                status = r.Status.ToString().ToLowerInvariant(),
+                ready = r.Ready,
+                queue = new
+                {
+                    ready = r.Queue.Ready,
+                    oldestReadyAgeSeconds = r.Queue.OldestReadyAge?.TotalSeconds,
+                    stalled = r.Queue.Stalled,
+                    stalledThresholdSeconds = r.Queue.StalledThreshold.TotalSeconds,
+                    sampledAt = r.Queue.SampledAt?.UtcDateTime,
+                },
+                circuitBreakers = r.CircuitBreakers.Select(b => new
+                {
+                    job = b.Job, state = b.State, consecutiveFailures = b.ConsecutiveFailures, openUntil = b.OpenUntil?.UtcDateTime,
+                }),
+            }, statusCode: r.Status == HealthStatus.Unhealthy ? StatusCodes.Status503ServiceUnavailable : StatusCodes.Status200OK);
+        });
 
         var jobs = app.MapGroup("/api/jobs");
 
