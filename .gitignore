@@ -4,3 +4,4 @@ obj/
 .vs/
 .idea/
 TestResults/
+.claude/worktrees/
