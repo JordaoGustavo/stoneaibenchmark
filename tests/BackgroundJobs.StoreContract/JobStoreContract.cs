@@ -713,14 +713,151 @@ public abstract class JobStoreContract : IAsyncLifetime
         Assert.Single(await _store.ListAsync(null, 100, false, Ct));
     }
 
+    // ---- continuations ----
+
+    [Fact]
+    public async Task A_continuation_awaits_its_unfinished_parent_and_is_released_when_it_succeeds()
+    {
+        var parent = await Insert();
+        var claimed = Assert.Single(await Claim());
+        var child = await Insert(continueAfter: parent);
+
+        var awaiting = await Get(child);
+        Assert.Equal(JobState.Awaiting, awaiting.State);
+        Assert.Equal((parent, ContinuationCondition.OnSucceeded), (awaiting.ContinueAfter, awaiting.Condition));
+        Assert.Empty(await Claim());
+
+        Assert.True(await Finish(claimed, JobTransition.Succeed, AttemptOutcome.Succeeded));
+        var released = await Get(child);
+        Assert.Equal([(JobState.Awaiting, Reasons.AwaitingParent), (JobState.Enqueued, Reasons.ParentFinished)], History(released));
+        Assert.Equal(child, Assert.Single(await Claim()).Id);
+    }
+
+    [Theory]
+    [InlineData(ContinuationCondition.OnSucceeded, JobState.Cancelled, Reasons.ContinuationConditionNotMet)]
+    [InlineData(ContinuationCondition.OnFinished, JobState.Enqueued, Reasons.ParentFinished)]
+    public async Task A_failed_parent_releases_or_cancels_by_condition(ContinuationCondition condition, JobState expected, string reason)
+    {
+        var parent = await Insert(maxAttempts: 1);
+        var claimed = Assert.Single(await Claim());
+        var child = await Insert(continueAfter: parent, condition: condition);
+
+        Assert.True(await Finish(claimed, JobTransition.Fail(retry: false), AttemptOutcome.Failed, error: "boom"));
+        Assert.Equal((expected, reason), (await Get(child)).History.Select(h => (h.State, h.Reason)).Last());
+    }
+
+    [Fact]
+    public async Task A_retry_of_the_parent_keeps_the_continuation_awaiting()
+    {
+        var parent = await Insert();
+        var claimed = Assert.Single(await Claim());
+        var child = await Insert(continueAfter: parent);
+
+        Assert.True(await Finish(claimed, JobTransition.Fail(retry: true), AttemptOutcome.Failed, retryAt: T0.AddMinutes(1)));
+        Assert.Equal(JobState.Awaiting, (await Get(child)).State);
+    }
+
+    [Fact]
+    public async Task A_parent_finished_at_insert_decides_at_once()
+    {
+        var parent = await Insert();
+        await _store.ApplyAsync(parent, JobTransition.Delete, T0, Ct);
+
+        var cancelled = await Get(await Insert(continueAfter: parent));
+        Assert.Equal([(JobState.Cancelled, Reasons.ContinuationConditionNotMet)], History(cancelled));
+        var enqueued = await Get(await Insert(continueAfter: parent, condition: ContinuationCondition.OnFinished));
+        Assert.Equal([(JobState.Enqueued, Reasons.Created)], History(enqueued));
+        var scheduled = await Get(await Insert(continueAfter: parent, condition: ContinuationCondition.OnFinished, runAt: T0.AddMinutes(5)));
+        Assert.Equal((JobState.Scheduled, T0.AddMinutes(5)), (scheduled.State, scheduled.ScheduledAt));
+    }
+
+    [Fact]
+    public async Task A_missing_parent_is_rejected()
+    {
+        var missing = Guid.CreateVersion7();
+        var e = await Assert.ThrowsAsync<JobNotFoundException>(() => Insert(continueAfter: missing));
+        Assert.Equal(missing, e.JobId);
+    }
+
+    [Fact]
+    public async Task A_released_continuation_with_a_future_run_at_is_scheduled()
+    {
+        var parent = await Insert();
+        var claimed = Assert.Single(await Claim());
+        var child = await Insert(continueAfter: parent, runAt: T0.AddMinutes(5));
+        Assert.Null((await Get(child)).ScheduledAt);
+
+        Assert.True(await Finish(claimed, JobTransition.Succeed, AttemptOutcome.Succeeded));
+        var job = await Get(child);
+        Assert.Equal((JobState.Scheduled, T0.AddMinutes(5)), (job.State, job.ScheduledAt));
+    }
+
+    [Fact]
+    public async Task Cancelling_a_parent_cancels_a_chain_of_continuations()
+    {
+        var a = await Insert(runAt: T0.AddMinutes(5));
+        var b = await Insert(continueAfter: a);
+        var c = await Insert(continueAfter: b);
+        var d = await Insert(continueAfter: b, condition: ContinuationCondition.OnFinished);
+
+        Assert.False(await _store.CancelAsync(a, T0, Ct));
+        Assert.Equal(JobState.Cancelled, (await Get(b)).State);
+        Assert.Equal(JobState.Cancelled, (await Get(c)).State);
+        Assert.Equal(JobState.Enqueued, (await Get(d)).State);
+    }
+
+    [Fact]
+    public async Task An_awaiting_continuation_can_be_deleted_or_cancelled_and_is_then_left_alone()
+    {
+        var parent = await Insert();
+        var claimed = Assert.Single(await Claim());
+        var deleted = await Insert(continueAfter: parent);
+        var cancelled = await Insert(continueAfter: parent);
+        await _store.ApplyAsync(deleted, JobTransition.Delete, T0, Ct);
+        Assert.False(await _store.CancelAsync(cancelled, T0, Ct));
+
+        Assert.True(await Finish(claimed, JobTransition.Succeed, AttemptOutcome.Succeeded));
+        Assert.Equal(JobState.Deleted, (await Get(deleted)).State);
+        Assert.Equal(JobState.Cancelled, (await Get(cancelled)).State);
+    }
+
+    [Fact]
+    public async Task An_awaiting_continuation_holds_its_idempotency_key()
+    {
+        var parent = await Insert(runAt: T0.AddMinutes(5));
+        var child = await Insert(continueAfter: parent, key: "k");
+        Assert.Equal(child, await Insert(key: "k"));
+    }
+
+    [Fact]
+    public async Task A_parent_finishing_while_continuations_are_inserted_releases_every_one()
+    {
+        for (var round = 0; round < 5; round++)
+        {
+            var parent = await Insert(queue: "parents");
+            var claimed = Assert.Single(await Claim(queue: "parents"));
+            var inserts = Enumerable.Range(0, 10).Select(_ => Task.Run(() => Insert(continueAfter: parent))).ToList();
+            var finish = Task.Run(() => Finish(claimed, JobTransition.Succeed, AttemptOutcome.Succeeded));
+            await Task.WhenAll(inserts.Cast<Task>().Append(finish));
+
+            Assert.True(await finish);
+            foreach (var id in inserts.Select(t => t.Result))
+                Assert.Equal(JobState.Enqueued, (await Get(id)).State);
+        }
+    }
+
     // ---- helpers ----
 
     private static DateTime Truncate(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
 
     private Task<Guid> Insert(
         DateTime? runAt = null, string queue = JobQueues.Default, int priority = 0, string? key = null, string name = "job",
-        string args = "{}", int maxAttempts = 3) =>
-        _store.InsertAsync(new NewJob(Guid.CreateVersion7(), name, args, 1, maxAttempts, 1000, 0, runAt, T0, queue, priority, key), Ct);
+        string args = "{}", int maxAttempts = 3, Guid? continueAfter = null, ContinuationCondition condition = ContinuationCondition.OnSucceeded) =>
+        _store.InsertAsync(new NewJob(Guid.CreateVersion7(), name, args, 1, maxAttempts, 1000, 0, runAt, T0, queue, priority, key)
+        {
+            ContinueAfter = continueAfter,
+            Condition = condition,
+        }, Ct);
 
     private async Task<Job> Get(Guid id) => await _store.GetAsync(id, Ct) ?? throw new InvalidOperationException($"job {id} missing");
 

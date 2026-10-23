@@ -11,7 +11,8 @@ public static class DemoEndpoints
     private sealed record CreateJobRequest(string Job, JsonElement Params, CreateJobOptions? Options = null);
 
     private sealed record CreateJobOptions(
-        DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null, string? IdempotencyKey = null);
+        DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null, string? IdempotencyKey = null,
+        Guid? ContinueAfter = null, string? Condition = null);
 
     /// Strict input: unknown fields, missing parameters, nulls and numbers-as-strings are rejected.
     private static readonly JsonSerializerOptions Strict = new(JsonSerializerDefaults.Web)
@@ -55,6 +56,11 @@ public static class DemoEndpoints
                 };
                 return Results.Accepted(value: new { jobId = id.ToString() });
             }
+            catch (JobNotFoundException e)
+            {
+                // ContinueAfter names a job that does not exist.
+                return ManagementEndpoints.Error(400, e.Message);
+            }
             catch (Exception e) when (e is JsonException or BadRequest or ArgumentException)
             {
                 return ManagementEndpoints.Error(400, e.Message);
@@ -81,6 +87,14 @@ public static class DemoEndpoints
             Queue = o.Queue,
             Priority = o.Priority,
             IdempotencyKey = o.IdempotencyKey,
+            ContinueAfter = o.ContinueAfter,
+            Condition = o.Condition switch
+            {
+                null => null,
+                "on_succeeded" => ContinuationCondition.OnSucceeded,
+                "on_finished" => ContinuationCondition.OnFinished,
+                _ => throw new BadRequest("options.condition must be on_succeeded or on_finished"),
+            },
         };
     }
 

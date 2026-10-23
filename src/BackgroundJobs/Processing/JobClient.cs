@@ -14,6 +14,8 @@ internal sealed class JobClient(
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         var o = jobOptions;
         JobOptions.CheckIdempotencyKey(o?.IdempotencyKey);
+        if (o?.Condition is { } condition && !Enum.IsDefined(condition))
+            throw new ArgumentException($"JobOptions.Condition is {condition}; use ContinuationCondition.OnSucceeded or OnFinished");
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
@@ -24,9 +26,19 @@ internal sealed class JobClient(
         var id = JobIds.Next(now);
         var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
-            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey);
+            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey)
+        {
+            ContinueAfter = o?.ContinueAfter,
+            Condition = o?.Condition ?? ContinuationCondition.OnSucceeded,
+        };
         var stored = await store.InsertAsync(job, ct);
-        if (stored == id) signals.Entered(job.Creation.To);
+        // A continuation's creation state is decided by the store; waking both loops is harmless.
+        if (stored == id && job.ContinueAfter != null)
+        {
+            signals.JobsReady();
+            signals.SchedulesChanged();
+        }
+        else if (stored == id) signals.Entered(job.Creation.To);
         return stored;
     }
 

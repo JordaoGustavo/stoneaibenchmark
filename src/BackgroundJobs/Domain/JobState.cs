@@ -17,8 +17,21 @@ public enum JobState
     Failed,
     /// <summary>Finished: deleted by a user before it ran.</summary>
     Deleted,
-    /// <summary>Finished: cancelled by a user.</summary>
+    /// <summary>Finished: cancelled by a user, or a continuation whose parent did not meet its condition.</summary>
     Cancelled,
+    /// <summary>A continuation waiting for its parent job to finish (see <see cref="JobOptions.ContinueAfter"/>).</summary>
+    Awaiting,
+}
+
+/// <summary>
+/// When a continuation (<see cref="JobOptions.ContinueAfter"/>) runs once its parent finishes.
+/// </summary>
+public enum ContinuationCondition
+{
+    /// <summary>Only if the parent succeeded; otherwise the continuation is cancelled.</summary>
+    OnSucceeded,
+    /// <summary>Whatever the parent's final state: succeeded, failed, deleted or cancelled.</summary>
+    OnFinished,
 }
 
 /// <summary>
@@ -56,6 +69,18 @@ public static class JobStateWire
     /// Succeeded, failed, deleted or cancelled: nothing will happen to the job unless a user requeues it. Subject to retention.
     /// </summary>
     public static readonly IReadOnlyList<JobState> Finished = [JobState.Succeeded, JobState.Failed, JobState.Deleted, JobState.Cancelled];
+
+    /// <summary>The wire name, e.g. "on_succeeded".</summary>
+    public static string ToWire(this ContinuationCondition c) => c == ContinuationCondition.OnSucceeded ? "on_succeeded" : "on_finished";
+    /// <summary>Parses a wire name ("on_succeeded", "on_finished"), ignoring case.</summary>
+    /// <exception cref="ArgumentException">Not a condition name.</exception>
+    public static ContinuationCondition ParseCondition(string s) => Enum.Parse<ContinuationCondition>(s.Replace("_", ""), ignoreCase: true);
+
+    /// <summary>
+    /// Whether a parent that finished in <paramref name="parent"/> lets the continuation run.
+    /// </summary>
+    public static bool IsMetBy(this ContinuationCondition c, JobState parent) =>
+        Finished.Contains(parent) && (c == ContinuationCondition.OnFinished || parent == JobState.Succeeded);
 
     /// <summary>
     /// Whether <see cref="IJobClient.DeleteAsync"/> accepts a job in this state.

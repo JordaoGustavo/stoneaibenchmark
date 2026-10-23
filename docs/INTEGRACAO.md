@@ -192,7 +192,10 @@ Campos não informados usam os padrões de `BackgroundJobsOptions`.
 | `RetryJitter` (`TimeSpan?`) | Atraso aleatório extra em `[0, RetryJitter]` somado a cada retry |
 | `Queue` (`string?`) | Fila do job (padrão `"default"`). 1–64 caracteres `a-z`, `0-9`, `-`, `_`, `.`, começando por letra ou dígito (`JobQueues.IsValidName`) |
 | `Priority` (`int?`) | Maior roda primeiro dentro da fila; de `-100` a `100`, padrão `0` (`JobQueues`) |
-| `IdempotencyKey` (`string?`) | Deduplicação: enquanto um job com essa chave não terminou (`scheduled`, `enqueued`, `processing`), enfileirar a mesma chave retorna o id dele sem criar outro (nome, args e opções da nova chamada são ignorados), mesmo com chamadas concorrentes em vários nós. Depois que ele termina (`succeeded`, `failed`, `deleted`, `cancelled`) a chave fica livre. Até 200 caracteres, não vazia |
+| `IdempotencyKey` (`string?`) | Deduplicação: enquanto um job com essa chave não terminou (`awaiting`, `scheduled`, `enqueued`, `processing`), enfileirar a mesma chave retorna o id dele sem criar outro (nome, args e opções da nova chamada são ignorados), mesmo com chamadas concorrentes em vários nós. Depois que ele termina (`succeeded`, `failed`, `deleted`, `cancelled`) a chave fica livre. Até 200 caracteres, não vazia |
+
+| `ContinueAfter` (`Guid?`) | Continuação: o job só roda depois que este job pai finalizar (veja abaixo) |
+| `Condition` (`ContinuationCondition?`) | Com `ContinueAfter`: `OnSucceeded` (padrão) ou `OnFinished` |
 
 Agendamento não tem método próprio — é `EnqueueAsync` com `RunAt`:
 
@@ -204,6 +207,32 @@ await client.EnqueueAsync("greet", new GreetArgs("em 2s"), new JobOptions
     RetryDelay = TimeSpan.FromMilliseconds(500),
 });
 ```
+
+### Continuações (rodar B depois de A)
+
+```csharp
+var a = await client.EnqueueAsync("import", new ImportArgs(file));
+var b = await client.EnqueueAsync("notify", new NotifyArgs(file), new JobOptions { ContinueAfter = a });
+await client.EnqueueAsync("cleanup", new CleanupArgs(file),
+    new JobOptions { ContinueAfter = a, Condition = ContinuationCondition.OnFinished });
+```
+
+- A continuação fica em `awaiting` enquanto o pai não finaliza. Retries do pai não a afetam.
+- Quando o pai entra num estado final, **na mesma transação**, cada continuação vai para `enqueued` (ou `scheduled`, se o
+  `RunAt` dela ainda estiver no futuro) se a condição foi atendida, ou para `cancelled` (motivo
+  `continuation_condition_not_met`) se não. `OnSucceeded` exige `succeeded`; `OnFinished` aceita `succeeded`, `failed`,
+  `deleted` e `cancelled`. O cancelamento propaga pela cadeia (A → B → C: A falha, B e C `OnSucceeded` são cancelados).
+- Pai já finalizado no enqueue: a decisão é imediata. Pai inexistente (ou já purgado pela retenção):
+  `JobNotFoundException`.
+- Sem corrida entre nós: o enqueue da continuação trava a linha do pai (`FOR SHARE`) e a finalização do pai trava as
+  continuações, então ou o enqueue vê o pai finalizado, ou a finalização vê a continuação.
+- Um pai só. Para "depois de A e B", encadeie (B depois de A, C depois de B) ou use um job que enfileire os demais.
+- Requeue do pai não roda de novo continuações já liberadas ou canceladas; continuações enfileiradas depois do requeue
+  esperam a nova execução. Requeue de uma continuação cancelada a roda como job comum.
+- Uma continuação `awaiting` pode ser deletada ou cancelada; ela segura sua `IdempotencyKey`.
+- Retenção: só jobs finalizados são purgados, e um pai finalizado já não tem continuações `awaiting`; por isso o id do
+  pai em `ContinueAfter` pode apontar para um job que não existe mais.
+- O health check não conta jobs `awaiting` como fila parada: eles não estão prontos.
 
 ### Modelos retornados
 
@@ -310,7 +339,7 @@ builder.Services.AddBackgroundJobs(o =>
 
 ## 6. Ciclo de vida do job
 
-Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processing`, `succeeded`, `failed`, `deleted`, `cancelled`.
+Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processing`, `succeeded`, `failed`, `deleted`, `cancelled`, `awaiting`.
 
 ```
              RunAt futuro                    became_due
@@ -327,13 +356,15 @@ Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processi
  processing ── crash/lease expirado ──► enqueued (recovered_after_crash) ou failed se sem tentativas
  processing ── cancelado pela parada ──► enqueued (interrupted_by_shutdown), sempre, tentativa devolvida
  scheduled / enqueued / processing ── cancelled_by_user ──► cancelled   (processing: quando o código do job para)
+ criação com ContinueAfter ── awaiting_parent ──► awaiting ── pai finalizou ──► enqueued / scheduled (parent_finished)
+                                                                         └──► cancelled (continuation_condition_not_met)
 ```
 
 | Operação | Estados de origem permitidos |
 |---|---|
-| Delete | `scheduled`, `enqueued` |
+| Delete | `scheduled`, `enqueued`, `awaiting` |
 | Requeue | `succeeded`, `failed`, `deleted`, `cancelled` |
-| Cancel | `scheduled`, `enqueued`, `processing` |
+| Cancel | `scheduled`, `enqueued`, `processing`, `awaiting` |
 
 Um job em `processing` **não pode ser deletado**. As transições usam concorrência otimista (`version`); operações concorrentes conflitantes resultam em `InvalidJobTransitionException`.
 

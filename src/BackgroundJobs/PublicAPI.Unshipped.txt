@@ -1,3 +1,27 @@
 #nullable enable
 BackgroundJobs.Storage.ClaimRequest.Names.get -> System.Collections.Generic.IReadOnlyCollection<string!>?
 BackgroundJobs.Storage.ClaimRequest.Names.init -> void
+BackgroundJobs.ContinuationCondition
+BackgroundJobs.ContinuationCondition.OnFinished = 1 -> BackgroundJobs.ContinuationCondition
+BackgroundJobs.ContinuationCondition.OnSucceeded = 0 -> BackgroundJobs.ContinuationCondition
+BackgroundJobs.Job.Condition.get -> BackgroundJobs.ContinuationCondition?
+BackgroundJobs.Job.Condition.init -> void
+BackgroundJobs.Job.ContinueAfter.get -> System.Guid?
+BackgroundJobs.Job.ContinueAfter.init -> void
+BackgroundJobs.JobOptions.Condition.get -> BackgroundJobs.ContinuationCondition?
+BackgroundJobs.JobOptions.Condition.init -> void
+BackgroundJobs.JobOptions.ContinueAfter.get -> System.Guid?
+BackgroundJobs.JobOptions.ContinueAfter.init -> void
+BackgroundJobs.JobState.Awaiting = 7 -> BackgroundJobs.JobState
+BackgroundJobs.Storage.NewJob.Condition.get -> BackgroundJobs.ContinuationCondition
+BackgroundJobs.Storage.NewJob.Condition.init -> void
+BackgroundJobs.Storage.NewJob.ContinueAfter.get -> System.Guid?
+BackgroundJobs.Storage.NewJob.ContinueAfter.init -> void
+const BackgroundJobs.Reasons.AwaitingParent = "awaiting_parent" -> string!
+const BackgroundJobs.Reasons.ContinuationConditionNotMet = "continuation_condition_not_met" -> string!
+const BackgroundJobs.Reasons.ParentFinished = "parent_finished" -> string!
+static BackgroundJobs.JobStateWire.IsMetBy(this BackgroundJobs.ContinuationCondition c, BackgroundJobs.JobState parent) -> bool
+static BackgroundJobs.JobStateWire.ParseCondition(string! s) -> BackgroundJobs.ContinuationCondition
+static BackgroundJobs.JobStateWire.ToWire(this BackgroundJobs.ContinuationCondition c) -> string!
+static BackgroundJobs.JobTransition.CreateContinuation(BackgroundJobs.JobState parent, BackgroundJobs.ContinuationCondition condition, bool scheduled) -> BackgroundJobs.JobTransition!
+static BackgroundJobs.JobTransition.ParentFinished(BackgroundJobs.JobState parent, BackgroundJobs.ContinuationCondition condition, bool scheduled) -> BackgroundJobs.JobTransition!

@@ -222,5 +222,7 @@ public static class ManagementEndpoints
         {
             attempt = a.Attempt, startedAt = a.StartedAt, finishedAt = a.FinishedAt, outcome = a.Outcome?.ToWire(), error = a.Error,
         }),
+        continueAfter = job.ContinueAfter?.ToString(),
+        continuationCondition = job.Condition?.ToWire(),
     };
 }

@@ -55,7 +55,14 @@ public sealed record Job(
     int RefundedAttempts = 0,
     string Queue = JobQueues.Default,
     int Priority = JobQueues.DefaultPriority,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null)
+{
+    /// <summary>The parent job of a continuation (<see cref="JobOptions.ContinueAfter"/>); null otherwise.</summary>
+    public Guid? ContinueAfter { get; init; }
+
+    /// <summary>The continuation condition when <see cref="ContinueAfter"/> is set; null otherwise.</summary>
+    public ContinuationCondition? Condition { get; init; }
+}
 
 /// <summary>
 /// One state change of a job.
