@@ -9,7 +9,9 @@ Não há dependência de motor de jobs de terceiros. O motor de agendamento e pr
 ## Recursos
 
 - Enfileiramento imediato e agendamento (`JobOptions.RunAt`); jobs recorrentes por cron, com fuso horário
-- Retry com limite de tentativas, atraso fixo e jitter opcional
+- Retry com limite de tentativas, atraso fixo ou backoff exponencial opcional (com teto) e jitter
+- Continuações: um job espera em `awaiting` até o pai finalizar (`ContinueAfter`, condição `OnSucceeded`/`OnFinished`)
+- Enfileiramento em lote atômico (`EnqueueManyAsync`) e, no Postgres, dentro da transação da aplicação (outbox)
 - Filas nomeadas com workers próprios, prioridades (`-100..100`) e uma fração FIFO contra starvation
 - Limite de concorrência por tipo de job no cluster inteiro (`MaxConcurrency`) e circuit breaker por tipo
 - Chaves de idempotência no enqueue
@@ -73,7 +75,8 @@ As migrations rodam sozinhas na partida. Para subir um Postgres local: `docker c
 
 - [Guia de integração](docs/INTEGRACAO.md): conceitos, configuração, ciclo de vida, operação
 - [Referência da API](docs/API.md): todos os tipos públicos e rotas HTTP
-- [Exemplos](samples/README.md): worker sem HTTP, API ASP.NET, recorrentes, idempotência, cancelamento, concorrência
+- [Exemplos](samples/README.md): worker sem HTTP, API ASP.NET, recorrentes, idempotência, cancelamento, concorrência,
+  backoff exponencial, continuações, outbox transacional e lote
 - [Como executar](RUNNING.md): demo, telemetria, testes
 - [AGENTS.md](AGENTS.md): guia para agentes de IA (uso da biblioteca e trabalho neste repositório)
 - [Especificação original](docs/SPEC.md): o desafio que originou o projeto

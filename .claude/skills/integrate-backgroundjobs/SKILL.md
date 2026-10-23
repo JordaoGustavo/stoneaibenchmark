@@ -33,6 +33,17 @@ assinatura que for usar. Não invente membros: se algo não está em `docs/API.m
 6. **Enfileirar.** Injete `IJobClient` e use `EnqueueAsync("x", new XArgs(...), new JobOptions { ... })`. Use
    `RunAt` para agendar e `IdempotencyKey` quando o mesmo pedido puder chegar duas vezes (por exemplo, um webhook).
    Use o mesmo nome do `Register`: nome errado só falha na execução. Considere uma constante para o nome.
+   - **Vários jobs de uma vez:** `EnqueueManyAsync(new[] { new JobToEnqueue(nome, args, opções), ... })` é atômico
+     (todos ou nenhum) e retorna os ids na ordem de entrada.
+   - **Junto de uma escrita da app (outbox, só Postgres):** `client.EnqueueAsync(tx, nome, args, opções)` ou
+     `client.EnqueueManyAsync(tx, jobs)` com a `NpgsqlTransaction` aberta no mesmo banco de `UsePostgres`. Os jobs só
+     existem se ela fizer commit; use `READ COMMITTED`. Prefira isso a "gravar e depois enfileirar".
+   - **Encadear:** `JobOptions.ContinueAfter = idDoPai` deixa o job em `awaiting` até o pai finalizar.
+     `Condition = OnSucceeded` (padrão; senão fica `cancelled`) ou `OnFinished` (roda em qualquer estado final, bom
+     para limpeza). Pai inexistente lança `JobNotFoundException`.
+   - **Retry:** atraso fixo por padrão. Para falhas transitórias de serviços externos use
+     `RetryBackoff = RetryBackoff.Exponential` (+ `RetryBackoffMultiplier`, `MaxRetryDelay` como teto), por job ou via
+     `DefaultRetryBackoff`/`DefaultRetryBackoffMultiplier`/`DefaultMaxRetryDelay` em `BackgroundJobsOptions`.
 7. **Recorrentes**, se houver: `.AddRecurringJob(id, jobName, cron, args, new RecurringJobOptions { TimeZone = ... })`
    no builder. O job precisa estar registrado; um erro aqui é só logado na partida.
 8. **HTTP opcional.** `app.MapBackgroundJobsApi()` e/ou `app.MapBackgroundJobsDashboard().RequireAuthorization(...)`.
@@ -53,4 +64,5 @@ assinatura que for usar. Não invente membros: se algo não está em `docs/API.m
 - [ ] Jobs idempotentes e repassando o `CancellationToken`
 - [ ] Cada fila usada em `JobOptions.Queue` é consumida por algum nó (`BackgroundJobsOptions.Queues`)
 - [ ] Rotas HTTP/dashboard protegidas
+- [ ] Jobs que dependem de uma escrita no banco são enfileirados na mesma transação (outbox), não depois do commit
 - [ ] `dotnet build` sem warnings (o repositório usa `TreatWarningsAsErrors`)
