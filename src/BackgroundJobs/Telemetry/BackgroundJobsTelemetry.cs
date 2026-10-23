@@ -4,15 +4,22 @@ using BackgroundJobs.Processing;
 
 namespace BackgroundJobs;
 
+/// <summary>
 /// Names to subscribe to with OpenTelemetry: .AddSource(BackgroundJobsTelemetry.Name) and .AddMeter(BackgroundJobsTelemetry.Name).
+/// </summary>
 public static class BackgroundJobsTelemetry
 {
+    /// <summary>
+    /// Both the ActivitySource and the Meter name.
+    /// </summary>
     public const string Name = "BackgroundJobs";
 
     internal static readonly ActivitySource Source = new(Name);
 }
 
+/// <summary>
 /// Attempt metrics are recorded as jobs finish; queue gauges read the latest <see cref="QueueMonitor"/> sample.
+/// </summary>
 internal sealed class JobsMetrics
 {
     private readonly Histogram<double> _duration;

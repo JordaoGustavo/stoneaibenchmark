@@ -7,7 +7,9 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// Runs one claimed job and records the outcome. Never throws: a job's failure must not affect others.
+/// </summary>
 internal sealed class JobExecutor(
     IJobStore store,
     JobRegistry registry,
@@ -20,8 +22,10 @@ internal sealed class JobExecutor(
     TimeProvider time,
     ILogger<JobExecutor> logger)
 {
+    /// <summary>
     /// <paramref name="stopping"/> fires when the server stops; the job sees it, merged with its timeout and a user cancel,
     /// as its token. <paramref name="abandon"/> frees the job's worker while it keeps running; false when refused.
+    /// </summary>
     public async Task ExecuteAsync(ClaimedJob job, CancellationToken stopping, Func<bool> abandon)
     {
         // Everything logged during the attempt, the job's own logs included, carries these.
@@ -76,7 +80,9 @@ internal sealed class JobExecutor(
         ClaimedJob job, Activity? activity, CancellationToken stopping, Func<bool> abandon)
     {
         var registration = registry.Find(job.Name);
-        if (registration == null) return (AttemptOutcome.Failed, "unknown job");
+        if (registration == null) return (AttemptOutcome.Failed,
+            $"unknown job '{job.Name}': no job is registered under this name on this node; register it with " +
+            $"r.Register<TJob, TArgs>(\"{job.Name}\") in AddBackgroundJobs, or fix the name it was enqueued with");
         var o = options.Value;
         var timeout = registration.Options.Timeout ?? o.DefaultJobTimeout;
         // Owned by the run, not by this method: a job given up on at shutdown keeps its token until its code returns.
@@ -171,7 +177,9 @@ internal sealed class JobExecutor(
         }
     }
 
+    /// <summary>
     /// Completes <paramref name="delay"/> after <paramref name="trigger"/> fires; never, if it does not. Cancelled by <paramref name="abort"/>.
+    /// </summary>
     private async Task DelayAfterAsync(CancellationToken trigger, TimeSpan delay, CancellationToken abort)
     {
         using var either = CancellationTokenSource.CreateLinkedTokenSource(trigger, abort);

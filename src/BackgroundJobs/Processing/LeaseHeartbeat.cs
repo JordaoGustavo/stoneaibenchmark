@@ -4,17 +4,23 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// Keeps leases of running jobs alive and recovers jobs whose lease expired (e.g. their node died). Runs until the
 /// dispatcher has finished every running job (the server stops it then), so a draining job keeps its lease.
 /// A job whose lease this node may no longer hold is stopped locally: another node may already be running it.
+/// </summary>
 internal sealed class LeaseHeartbeat(
     IJobStore store, Dispatcher dispatcher, CancelRequests cancels, StoreCircuitBreaker storeBreaker, Signals signals,
     IOptions<BackgroundJobsOptions> options, TimeProvider time, ILogger<LeaseHeartbeat> logger)
 {
+    /// <summary>
     /// When each running job's lease was last known to be held: the timestamp taken just before the claim or renewal
     /// the store confirmed. Read on this node's monotonic clock, so it holds whatever the store's clock says.
+    /// </summary>
     private readonly Dictionary<Guid, long> _confirmed = [];
+    /// <summary>
     /// Running jobs already stopped for a lost lease (one that ignores its token keeps running a while).
+    /// </summary>
     private readonly HashSet<Guid> _lost = [];
     private readonly Lock _lock = new();
 
@@ -46,8 +52,10 @@ internal sealed class LeaseHeartbeat(
         }
     }
 
+    /// <summary>
     /// Independent of the store calls, which may hang or back off while the store is unreachable: a job whose last
     /// confirmed lease has run out may already have been recovered by another node, so it is stopped here.
+    /// </summary>
     private async Task WatchAsync(CancellationToken ct)
     {
         var o = options.Value;
@@ -78,8 +86,10 @@ internal sealed class LeaseHeartbeat(
         cancels.LoseLease(id);
     }
 
+    /// <summary>
     /// Tells the store which queues this node consumes, for as long as a lease: the heartbeat renews it every
     /// LeaseDuration / 3, so it lapses about as soon as a dead node's jobs are recovered.
+    /// </summary>
     public static async Task<bool> RegisterAsync(IJobStore store, BackgroundJobsOptions o, TimeProvider time, CancellationToken ct)
     {
         var now = time.UtcNow();

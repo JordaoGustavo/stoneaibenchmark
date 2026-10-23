@@ -8,13 +8,20 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs;
 
+/// <summary>
 /// Returned by AddBackgroundJobs; pick a store on it: UsePostgres(...) (BackgroundJobs.Postgres) or UseInMemoryStorage().
+/// </summary>
 public sealed class BackgroundJobsBuilder(IServiceCollection services)
 {
+    /// <summary>
+    /// The service collection AddBackgroundJobs was called on; store packages register into it.
+    /// </summary>
     public IServiceCollection Services { get; } = services;
 
+    /// <summary>
     /// Keeps jobs in this process instead of a database: for tests and local runs of code that integrates the library.
     /// Everything is lost when the process exits and nodes share nothing, so never use it in production.
+    /// </summary>
     public BackgroundJobsBuilder UseInMemoryStorage()
     {
         Services.Replace(ServiceDescriptor.Singleton<IJobStore>(sp => new InMemoryJobStore()));
@@ -22,28 +29,39 @@ public sealed class BackgroundJobsBuilder(IServiceCollection services)
         return this;
     }
 
+    /// <summary>
     /// Declares a recurring job, created or updated (<see cref="IRecurringJobClient.UpsertAsync"/>) every time the server
     /// starts. Declarations removed from code are not deleted from the store: use <see cref="IRecurringJobClient.RemoveAsync"/>.
+    /// </summary>
     /// <exception cref="ArgumentException">Invalid id or cron.</exception>
     public BackgroundJobsBuilder AddRecurringJob<TArgs>(string id, string jobName, string cron, TArgs args, RecurringJobOptions? options = null)
     {
         RecurringJobIds.Check(id);
-        if (!CronExpression.TryParse(cron, out _)) throw new ArgumentException($"recurring job '{id}': cron '{cron}' is invalid");
+        ArgumentNullException.ThrowIfNull(cron);
+        try { CronExpression.Parse(cron); }
+        catch (FormatException e) { throw new ArgumentException($"recurring job '{id}': {e.Message}", nameof(cron), e); }
         Services.AddSingleton(new RecurringSeed(id, (client, ct) => client.UpsertAsync(id, jobName, cron, args, options, ct)));
         return this;
     }
 
+    /// <summary>
     /// No other node can change the in-memory store, so there is nothing to listen for.
+    /// </summary>
     private sealed class NoListener : IJobStoreListener
     {
         public Task RunAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }
 
+/// <summary>
+/// Registration of the background job server.
+/// </summary>
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
     /// Adds the job client (<see cref="IJobClient"/>), the <see cref="JobRegistry"/> and the hosted job server.
     /// Chain a store: <c>.UsePostgres(connectionString)</c> or <c>.UseInMemoryStorage()</c>.
+    /// </summary>
     public static BackgroundJobsBuilder AddBackgroundJobs(
         this IServiceCollection services, Action<BackgroundJobsOptions>? configure = null, Action<JobRegistry>? registerJobs = null)
     {

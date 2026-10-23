@@ -3,8 +3,10 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// One claim loop per consumed queue, each with its own worker slots: a queue claims at most as many jobs as it has free
 /// slots (no prefetch), so at most its worker count of functions run at once and a busy queue never takes another's slots.
+/// </summary>
 internal sealed class Dispatcher(
     IJobStore store,
     JobRegistry registry,
@@ -16,19 +18,25 @@ internal sealed class Dispatcher(
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time)
 {
+    /// <summary>
     /// LeaseFrom: the <see cref="TimeProvider.GetTimestamp"/> taken just before the claim that leased the job.
+    /// </summary>
     private sealed record RunningJob(long LeaseFrom, Task Task);
 
     private readonly Dictionary<Guid, RunningJob> _running = [];
     private readonly Lock _lock = new();
 
+    /// <summary>
     /// The running jobs, each with the timestamp its claim's lease started from at the latest.
+    /// </summary>
     public IReadOnlyDictionary<Guid, long> RunningLeases()
     {
         lock (_lock) return _running.ToDictionary(r => r.Key, r => r.Value.LeaseFrom);
     }
 
+    /// <summary>
     /// Returns after <paramref name="ct"/> is cancelled and every running job has finished.
+    /// </summary>
     public async Task RunAsync(CancellationToken ct)
     {
         await Task.WhenAll(options.Value.ConsumedQueues.Select(q => RunQueueAsync(q.Key, q.Value, ct)));
@@ -38,7 +46,9 @@ internal sealed class Dispatcher(
         await Task.WhenAll(running);
     }
 
+    /// <summary>
     /// Returns after <paramref name="ct"/> is cancelled; running jobs are awaited by <see cref="RunAsync"/>.
+    /// </summary>
     private async Task RunQueueAsync(string queue, int workers, CancellationToken ct)
     {
         var o = options.Value;
@@ -81,7 +91,10 @@ internal sealed class Dispatcher(
                     // Taken before the claim, so the lease this node assumes never outlasts the one the store wrote.
                     var leaseFrom = time.GetTimestamp();
                     var claimed = await storeBreaker.TryAsync("claim", () => store.ClaimAsync(
-                        new ClaimRequest(queue, order, o.NodeId, time.UtcNow(), o.LeaseDuration, limit, excluded, registry.ConcurrencyLimits),
+                        new ClaimRequest(queue, order, o.NodeId, time.UtcNow(), o.LeaseDuration, limit, excluded, registry.ConcurrencyLimits)
+                        {
+                            Names = registry.Names,
+                        },
                         CancellationToken.None),
                         CancellationToken.None) ?? [];
                     jobs.AddRange(claimed.Select(j => (j, leaseFrom)));

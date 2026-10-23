@@ -4,8 +4,10 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// Every RetentionSweepInterval, purges finished jobs older than FinishedJobRetention, in batches.
 /// Every node sweeps; stores make concurrent purges safe.
+/// </summary>
 internal sealed class RetentionSweeper(
     IJobStore store, StoreCircuitBreaker storeBreaker, IOptions<BackgroundJobsOptions> options, TimeProvider time, ILogger<RetentionSweeper> logger)
 {

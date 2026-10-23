@@ -8,8 +8,10 @@ using Microsoft.AspNetCore.Http;
 
 namespace BackgroundJobs;
 
+/// <summary>
 /// Derives an HTML form from a job's argument type and turns the posted form back into the JSON the job will receive.
 /// Scalars get native inputs; anything else (collections, nested objects) falls back to a JSON textarea.
+/// </summary>
 internal static class DashboardForms
 {
     private const string ArgPrefix = "arg.";
@@ -27,7 +29,9 @@ internal static class DashboardForms
         return sb.ToString();
     }
 
+    /// <summary>
     /// Builds the args object from the posted form and checks it deserializes into the job's argument type.
+    /// </summary>
     public static JsonObject Parse(Type argsType, IFormCollection form, TimeZoneInfo tz, List<string> errors)
     {
         var result = new JsonObject();
@@ -68,8 +72,10 @@ internal static class DashboardForms
         _ => JsonValue.Create(raw),
     };
 
+    /// <summary>
     /// datetime-local inputs carry a wall-clock time with no offset; it is read in the viewer's time zone.
     /// Throws ArgumentException for a time skipped by a daylight-saving jump.
+    /// </summary>
     public static DateTime ToUtc(DateTime wallClock, TimeZoneInfo tz) =>
         TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(wallClock, DateTimeKind.Unspecified), tz);
 
@@ -147,7 +153,9 @@ internal static class DashboardForms
         var x => x.ToString(),
     };
 
+    /// <summary>
     /// Records and other immutable types are described by their widest constructor; mutable types by settable properties.
+    /// </summary>
     private static List<Field> FieldsOf(Type argsType)
     {
         var nullability = new NullabilityInfoContext();
@@ -202,7 +210,9 @@ internal static class DashboardForms
         ? $"{t.Name[..t.Name.IndexOf('`')]}<{string.Join(", ", t.GetGenericArguments().Select(TypeName))}>"
         : t.Name;
 
+    /// <summary>
     /// "DelayMs" → "Delay ms".
+    /// </summary>
     private static string Humanize(string name)
     {
         var sb = new StringBuilder();

@@ -1,0 +1,7 @@
+#nullable enable
+BackgroundJobs.DashboardEndpoints
+BackgroundJobs.DashboardOptions
+BackgroundJobs.DashboardOptions.DashboardOptions() -> void
+BackgroundJobs.DashboardOptions.TimeZone.get -> System.TimeZoneInfo!
+BackgroundJobs.DashboardOptions.TimeZone.set -> void
+static BackgroundJobs.DashboardEndpoints.MapBackgroundJobsDashboard(this Microsoft.AspNetCore.Routing.IEndpointRouteBuilder! app, string! prefix = "/jobs", System.Action<BackgroundJobs.DashboardOptions!>? configure = null) -> Microsoft.AspNetCore.Routing.RouteGroupBuilder!

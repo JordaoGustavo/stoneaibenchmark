@@ -2,14 +2,18 @@ namespace BackgroundJobs.Processing;
 
 internal sealed record CircuitBreakerStatus(string Job, string State, int ConsecutiveFailures, DateTimeOffset? OpenUntil);
 
+/// <summary>
 /// What one claim of one queue may take. Blocked: names it must skip. Trials: half-open names reserved for this claim
 /// alone; the dispatcher claims them one job at a time, so a batch cannot take several trials of the same type.
+/// </summary>
 internal sealed record ClaimPermit(IReadOnlyCollection<string> Blocked, IReadOnlyCollection<string> Trials);
 
+/// <summary>
 /// Opt-in, in-memory, per job type. Open: the dispatcher does not claim the type.
 /// After the break it lets exactly one trial job through (half-open) before closing again. Queues claim concurrently,
 /// so the trial is reserved for one claim of one queue at a time; every other claim skips the type meanwhile. A claim
 /// that does not find the type hands the reservation back, so the queues take turns until one has a job of the type.
+/// </summary>
 internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
 {
     private enum Phase { Closed, Open, HalfOpenIdle, HalfOpenReserved, HalfOpenTrial }
@@ -24,7 +28,9 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
     private readonly Dictionary<string, State> _states = [];
     private readonly Lock _lock = new();
 
+    /// <summary>
     /// Call before a claim, then <see cref="EndClaim"/> with what it claimed.
+    /// </summary>
     public ClaimPermit BeginClaim()
     {
         var now = time.GetUtcNow();
@@ -45,7 +51,9 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
         }
     }
 
+    /// <summary>
     /// A reserved trial becomes the trial when its type was claimed, and is offered again otherwise.
+    /// </summary>
     public void EndClaim(ClaimPermit permit, IEnumerable<string> claimedNames)
     {
         var claimed = claimedNames.ToHashSet();
@@ -55,7 +63,9 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
                     s.Phase = claimed.Contains(name) ? Phase.HalfOpenTrial : Phase.HalfOpenIdle;
     }
 
+    /// <summary>
     /// Every job type with a breaker configured, closed ones included, ordered by name.
+    /// </summary>
     public IReadOnlyList<CircuitBreakerStatus> Snapshot()
     {
         var now = time.GetUtcNow();

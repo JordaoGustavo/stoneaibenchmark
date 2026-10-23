@@ -1,0 +1,4 @@
+#nullable enable
+BackgroundJobs.ManagementEndpoints
+static BackgroundJobs.ManagementEndpoints.Error(int status, string! message) -> Microsoft.AspNetCore.Http.IResult!
+static BackgroundJobs.ManagementEndpoints.MapBackgroundJobsApi(this Microsoft.AspNetCore.Routing.IEndpointRouteBuilder! app) -> Microsoft.AspNetCore.Routing.IEndpointRouteBuilder!

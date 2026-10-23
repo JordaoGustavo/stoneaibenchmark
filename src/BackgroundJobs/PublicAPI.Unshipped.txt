@@ -1,0 +1,3 @@
+#nullable enable
+BackgroundJobs.Storage.ClaimRequest.Names.get -> System.Collections.Generic.IReadOnlyCollection<string!>?
+BackgroundJobs.Storage.ClaimRequest.Names.init -> void

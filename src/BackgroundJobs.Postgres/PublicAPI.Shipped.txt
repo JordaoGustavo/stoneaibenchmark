@@ -1,0 +1,3 @@
+#nullable enable
+BackgroundJobs.PostgresBuilderExtensions
+static BackgroundJobs.PostgresBuilderExtensions.UsePostgres(this BackgroundJobs.BackgroundJobsBuilder! builder, string! connectionString) -> BackgroundJobs.BackgroundJobsBuilder!

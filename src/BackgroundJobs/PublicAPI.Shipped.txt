@@ -1,0 +1,568 @@
+#nullable enable
+BackgroundJobs.AttemptOutcome
+BackgroundJobs.AttemptOutcome.Cancelled = 3 -> BackgroundJobs.AttemptOutcome
+BackgroundJobs.AttemptOutcome.Failed = 1 -> BackgroundJobs.AttemptOutcome
+BackgroundJobs.AttemptOutcome.Interrupted = 2 -> BackgroundJobs.AttemptOutcome
+BackgroundJobs.AttemptOutcome.Succeeded = 0 -> BackgroundJobs.AttemptOutcome
+BackgroundJobs.BackgroundJobsBuilder
+BackgroundJobs.BackgroundJobsBuilder.AddRecurringJob<TArgs>(string! id, string! jobName, string! cron, TArgs args, BackgroundJobs.RecurringJobOptions? options = null) -> BackgroundJobs.BackgroundJobsBuilder!
+BackgroundJobs.BackgroundJobsBuilder.BackgroundJobsBuilder(Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> void
+BackgroundJobs.BackgroundJobsBuilder.Services.get -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+BackgroundJobs.BackgroundJobsBuilder.UseInMemoryStorage() -> BackgroundJobs.BackgroundJobsBuilder!
+BackgroundJobs.BackgroundJobsOptions
+BackgroundJobs.BackgroundJobsOptions.AbandonedJobAlertAfter.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.AbandonedJobAlertAfter.set -> void
+BackgroundJobs.BackgroundJobsOptions.BackgroundJobsOptions() -> void
+BackgroundJobs.BackgroundJobsOptions.ClaimBatchSize.get -> int?
+BackgroundJobs.BackgroundJobsOptions.ClaimBatchSize.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultJobTimeout.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.DefaultJobTimeout.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultMaxAttempts.get -> int
+BackgroundJobs.BackgroundJobsOptions.DefaultMaxAttempts.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryDelay.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryDelay.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryJitter.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryJitter.set -> void
+BackgroundJobs.BackgroundJobsOptions.FifoClaimEvery.get -> int?
+BackgroundJobs.BackgroundJobsOptions.FifoClaimEvery.set -> void
+BackgroundJobs.BackgroundJobsOptions.FinishedJobRetention.get -> System.TimeSpan?
+BackgroundJobs.BackgroundJobsOptions.FinishedJobRetention.set -> void
+BackgroundJobs.BackgroundJobsOptions.LeaseDuration.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.LeaseDuration.set -> void
+BackgroundJobs.BackgroundJobsOptions.MaxAbandonedJobs.get -> int
+BackgroundJobs.BackgroundJobsOptions.MaxAbandonedJobs.set -> void
+BackgroundJobs.BackgroundJobsOptions.NodeId.get -> string!
+BackgroundJobs.BackgroundJobsOptions.NodeId.set -> void
+BackgroundJobs.BackgroundJobsOptions.PollInterval.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.PollInterval.set -> void
+BackgroundJobs.BackgroundJobsOptions.QueueMonitorInterval.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.QueueMonitorInterval.set -> void
+BackgroundJobs.BackgroundJobsOptions.Queues.get -> System.Collections.Generic.Dictionary<string!, int>!
+BackgroundJobs.BackgroundJobsOptions.Queues.set -> void
+BackgroundJobs.BackgroundJobsOptions.RetentionBatchSize.get -> int
+BackgroundJobs.BackgroundJobsOptions.RetentionBatchSize.set -> void
+BackgroundJobs.BackgroundJobsOptions.RetentionSweepInterval.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.RetentionSweepInterval.set -> void
+BackgroundJobs.BackgroundJobsOptions.SchedulerMaxWait.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.SchedulerMaxWait.set -> void
+BackgroundJobs.BackgroundJobsOptions.ShutdownTimeout.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.ShutdownTimeout.set -> void
+BackgroundJobs.BackgroundJobsOptions.StalledQueueThreshold.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.StalledQueueThreshold.set -> void
+BackgroundJobs.BackgroundJobsOptions.TimeoutGracePeriod.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.TimeoutGracePeriod.set -> void
+BackgroundJobs.BackgroundJobsOptions.WorkerCount.get -> int
+BackgroundJobs.BackgroundJobsOptions.WorkerCount.set -> void
+BackgroundJobs.BackgroundJobsTelemetry
+BackgroundJobs.CircuitBreakerOptions
+BackgroundJobs.CircuitBreakerOptions.BreakDuration.get -> System.TimeSpan
+BackgroundJobs.CircuitBreakerOptions.BreakDuration.init -> void
+BackgroundJobs.CircuitBreakerOptions.CircuitBreakerOptions(int FailureThreshold, System.TimeSpan BreakDuration) -> void
+BackgroundJobs.CircuitBreakerOptions.FailureThreshold.get -> int
+BackgroundJobs.CircuitBreakerOptions.FailureThreshold.init -> void
+BackgroundJobs.CronExpression
+BackgroundJobs.CronExpression.Expression.get -> string!
+BackgroundJobs.CronExpression.GetNextOccurrence(System.DateTime fromUtc, System.TimeZoneInfo! timeZone) -> System.DateTime?
+BackgroundJobs.CronExpression.HasSeconds.get -> bool
+BackgroundJobs.Health.AbandonedHealth
+BackgroundJobs.Health.AbandonedHealth.AbandonedHealth(System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.AbandonedJobHealth!>! Jobs, int Limit, bool Full, bool Alert, System.TimeSpan AlertAfter) -> void
+BackgroundJobs.Health.AbandonedHealth.Alert.get -> bool
+BackgroundJobs.Health.AbandonedHealth.Alert.init -> void
+BackgroundJobs.Health.AbandonedHealth.AlertAfter.get -> System.TimeSpan
+BackgroundJobs.Health.AbandonedHealth.AlertAfter.init -> void
+BackgroundJobs.Health.AbandonedHealth.Full.get -> bool
+BackgroundJobs.Health.AbandonedHealth.Full.init -> void
+BackgroundJobs.Health.AbandonedHealth.Jobs.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.AbandonedJobHealth!>!
+BackgroundJobs.Health.AbandonedHealth.Jobs.init -> void
+BackgroundJobs.Health.AbandonedHealth.Limit.get -> int
+BackgroundJobs.Health.AbandonedHealth.Limit.init -> void
+BackgroundJobs.Health.AbandonedJobHealth
+BackgroundJobs.Health.AbandonedJobHealth.AbandonedJobHealth(System.Guid Id, string! Name, System.DateTimeOffset Since, System.TimeSpan Age) -> void
+BackgroundJobs.Health.AbandonedJobHealth.Age.get -> System.TimeSpan
+BackgroundJobs.Health.AbandonedJobHealth.Age.init -> void
+BackgroundJobs.Health.AbandonedJobHealth.Id.get -> System.Guid
+BackgroundJobs.Health.AbandonedJobHealth.Id.init -> void
+BackgroundJobs.Health.AbandonedJobHealth.Name.get -> string!
+BackgroundJobs.Health.AbandonedJobHealth.Name.init -> void
+BackgroundJobs.Health.AbandonedJobHealth.Since.get -> System.DateTimeOffset
+BackgroundJobs.Health.AbandonedJobHealth.Since.init -> void
+BackgroundJobs.Health.CircuitBreakerHealth
+BackgroundJobs.Health.CircuitBreakerHealth.CircuitBreakerHealth(string! Job, string! State, int ConsecutiveFailures, System.DateTimeOffset? OpenUntil) -> void
+BackgroundJobs.Health.CircuitBreakerHealth.ConsecutiveFailures.get -> int
+BackgroundJobs.Health.CircuitBreakerHealth.ConsecutiveFailures.init -> void
+BackgroundJobs.Health.CircuitBreakerHealth.Job.get -> string!
+BackgroundJobs.Health.CircuitBreakerHealth.Job.init -> void
+BackgroundJobs.Health.CircuitBreakerHealth.OpenUntil.get -> System.DateTimeOffset?
+BackgroundJobs.Health.CircuitBreakerHealth.OpenUntil.init -> void
+BackgroundJobs.Health.CircuitBreakerHealth.State.get -> string!
+BackgroundJobs.Health.CircuitBreakerHealth.State.init -> void
+BackgroundJobs.Health.JobServerHealthCheck
+BackgroundJobs.Health.JobServerHealthCheck.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
+BackgroundJobs.Health.JobServerHealthCheck.IsReady.get -> bool
+BackgroundJobs.Health.JobServerHealthCheck.Report() -> BackgroundJobs.Health.JobServerHealthReport!
+BackgroundJobs.Health.JobServerHealthReport
+BackgroundJobs.Health.JobServerHealthReport.Abandoned.get -> BackgroundJobs.Health.AbandonedHealth!
+BackgroundJobs.Health.JobServerHealthReport.Abandoned.init -> void
+BackgroundJobs.Health.JobServerHealthReport.At.get -> System.DateTimeOffset
+BackgroundJobs.Health.JobServerHealthReport.At.init -> void
+BackgroundJobs.Health.JobServerHealthReport.CircuitBreakers.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.CircuitBreakerHealth!>!
+BackgroundJobs.Health.JobServerHealthReport.CircuitBreakers.init -> void
+BackgroundJobs.Health.JobServerHealthReport.JobServerHealthReport(Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus Status, bool Ready, BackgroundJobs.Health.QueueHealth! Queue, System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.CircuitBreakerHealth!>! CircuitBreakers, BackgroundJobs.Health.AbandonedHealth! Abandoned, System.DateTimeOffset At) -> void
+BackgroundJobs.Health.JobServerHealthReport.Queue.get -> BackgroundJobs.Health.QueueHealth!
+BackgroundJobs.Health.JobServerHealthReport.Queue.init -> void
+BackgroundJobs.Health.JobServerHealthReport.Ready.get -> bool
+BackgroundJobs.Health.JobServerHealthReport.Ready.init -> void
+BackgroundJobs.Health.JobServerHealthReport.Status.get -> Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus
+BackgroundJobs.Health.JobServerHealthReport.Status.init -> void
+BackgroundJobs.Health.QueueDepthHealth
+BackgroundJobs.Health.QueueDepthHealth.Consumed.get -> bool
+BackgroundJobs.Health.QueueDepthHealth.Consumed.init -> void
+BackgroundJobs.Health.QueueDepthHealth.OldestReadyAge.get -> System.TimeSpan
+BackgroundJobs.Health.QueueDepthHealth.OldestReadyAge.init -> void
+BackgroundJobs.Health.QueueDepthHealth.Orphaned.get -> bool
+BackgroundJobs.Health.QueueDepthHealth.Orphaned.init -> void
+BackgroundJobs.Health.QueueDepthHealth.Queue.get -> string!
+BackgroundJobs.Health.QueueDepthHealth.Queue.init -> void
+BackgroundJobs.Health.QueueDepthHealth.QueueDepthHealth(string! Queue, bool Consumed, long Ready, System.TimeSpan OldestReadyAge, bool Orphaned) -> void
+BackgroundJobs.Health.QueueDepthHealth.Ready.get -> long
+BackgroundJobs.Health.QueueDepthHealth.Ready.init -> void
+BackgroundJobs.Health.QueueHealth
+BackgroundJobs.Health.QueueHealth.OldestReadyAge.get -> System.TimeSpan?
+BackgroundJobs.Health.QueueHealth.OldestReadyAge.init -> void
+BackgroundJobs.Health.QueueHealth.QueueHealth(long? Ready, System.TimeSpan? OldestReadyAge, System.DateTimeOffset? SampledAt, bool Stalled, System.TimeSpan StalledThreshold, System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.QueueDepthHealth!>! Queues) -> void
+BackgroundJobs.Health.QueueHealth.Queues.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.Health.QueueDepthHealth!>!
+BackgroundJobs.Health.QueueHealth.Queues.init -> void
+BackgroundJobs.Health.QueueHealth.Ready.get -> long?
+BackgroundJobs.Health.QueueHealth.Ready.init -> void
+BackgroundJobs.Health.QueueHealth.SampledAt.get -> System.DateTimeOffset?
+BackgroundJobs.Health.QueueHealth.SampledAt.init -> void
+BackgroundJobs.Health.QueueHealth.Stalled.get -> bool
+BackgroundJobs.Health.QueueHealth.Stalled.init -> void
+BackgroundJobs.Health.QueueHealth.StalledThreshold.get -> System.TimeSpan
+BackgroundJobs.Health.QueueHealth.StalledThreshold.init -> void
+BackgroundJobs.IJob<TArgs>
+BackgroundJobs.IJob<TArgs>.ExecuteAsync(TArgs args, BackgroundJobs.JobContext! context) -> System.Threading.Tasks.Task!
+BackgroundJobs.IJobClient
+BackgroundJobs.IJobClient.CancelAsync(System.Guid id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+BackgroundJobs.IJobClient.DeleteAsync(System.Guid id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+BackgroundJobs.IJobClient.EnqueueAsync<TArgs>(string! jobName, TArgs args, BackgroundJobs.JobOptions? options = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Guid>!
+BackgroundJobs.IJobClient.GetAsync(System.Guid id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<BackgroundJobs.Job!>!
+BackgroundJobs.IJobClient.ListAsync(System.Guid? after = null, int limit = 100, bool descending = false, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobSummary!>!>!
+BackgroundJobs.IJobClient.RequeueAsync(System.Guid id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+BackgroundJobs.IRecurringJobClient
+BackgroundJobs.IRecurringJobClient.GetAsync(string! id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<BackgroundJobs.RecurringJob!>!
+BackgroundJobs.IRecurringJobClient.ListAsync(System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.RecurringJob!>!>!
+BackgroundJobs.IRecurringJobClient.RemoveAsync(string! id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+BackgroundJobs.IRecurringJobClient.TriggerAsync(string! id, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Guid>!
+BackgroundJobs.IRecurringJobClient.UpsertAsync<TArgs>(string! id, string! jobName, string! cron, TArgs args, BackgroundJobs.RecurringJobOptions? options = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<BackgroundJobs.RecurringJob!>!
+BackgroundJobs.IdempotencyKeyConflictException
+BackgroundJobs.IdempotencyKeyConflictException.HolderJobId.get -> System.Guid
+BackgroundJobs.IdempotencyKeyConflictException.IdempotencyKey.get -> string!
+BackgroundJobs.IdempotencyKeyConflictException.IdempotencyKeyConflictException(System.Guid id, string! key, System.Guid holderId) -> void
+BackgroundJobs.IdempotencyKeyConflictException.JobId.get -> System.Guid
+BackgroundJobs.InvalidJobTransitionException
+BackgroundJobs.InvalidJobTransitionException.CurrentState.get -> BackgroundJobs.JobState
+BackgroundJobs.InvalidJobTransitionException.InvalidJobTransitionException(System.Guid id, BackgroundJobs.JobState current, string! operation) -> void
+BackgroundJobs.InvalidJobTransitionException.JobId.get -> System.Guid
+BackgroundJobs.Job
+BackgroundJobs.Job.Args.get -> System.Text.Json.JsonElement
+BackgroundJobs.Job.Args.init -> void
+BackgroundJobs.Job.ArgsVersion.get -> int
+BackgroundJobs.Job.ArgsVersion.init -> void
+BackgroundJobs.Job.AttemptHistory.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobAttempt!>!
+BackgroundJobs.Job.AttemptHistory.init -> void
+BackgroundJobs.Job.Attempts.get -> int
+BackgroundJobs.Job.Attempts.init -> void
+BackgroundJobs.Job.CreatedAt.get -> System.DateTime
+BackgroundJobs.Job.CreatedAt.init -> void
+BackgroundJobs.Job.History.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobHistoryEntry!>!
+BackgroundJobs.Job.History.init -> void
+BackgroundJobs.Job.Id.get -> System.Guid
+BackgroundJobs.Job.Id.init -> void
+BackgroundJobs.Job.IdempotencyKey.get -> string?
+BackgroundJobs.Job.IdempotencyKey.init -> void
+BackgroundJobs.Job.Job(System.Guid Id, string! Name, System.Text.Json.JsonElement Args, int ArgsVersion, BackgroundJobs.JobState State, int Attempts, int MaxAttempts, System.TimeSpan RetryDelay, System.DateTime? ScheduledAt, System.DateTime CreatedAt, System.DateTime UpdatedAt, System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobHistoryEntry!>! History, System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobAttempt!>! AttemptHistory, int RefundedAttempts = 0, string! Queue = "default", int Priority = 0, string? IdempotencyKey = null) -> void
+BackgroundJobs.Job.MaxAttempts.get -> int
+BackgroundJobs.Job.MaxAttempts.init -> void
+BackgroundJobs.Job.Name.get -> string!
+BackgroundJobs.Job.Name.init -> void
+BackgroundJobs.Job.Priority.get -> int
+BackgroundJobs.Job.Priority.init -> void
+BackgroundJobs.Job.Queue.get -> string!
+BackgroundJobs.Job.Queue.init -> void
+BackgroundJobs.Job.RefundedAttempts.get -> int
+BackgroundJobs.Job.RefundedAttempts.init -> void
+BackgroundJobs.Job.RetryDelay.get -> System.TimeSpan
+BackgroundJobs.Job.RetryDelay.init -> void
+BackgroundJobs.Job.ScheduledAt.get -> System.DateTime?
+BackgroundJobs.Job.ScheduledAt.init -> void
+BackgroundJobs.Job.State.get -> BackgroundJobs.JobState
+BackgroundJobs.Job.State.init -> void
+BackgroundJobs.Job.UpdatedAt.get -> System.DateTime
+BackgroundJobs.Job.UpdatedAt.init -> void
+BackgroundJobs.JobAttempt
+BackgroundJobs.JobAttempt.Attempt.get -> int
+BackgroundJobs.JobAttempt.Attempt.init -> void
+BackgroundJobs.JobAttempt.Error.get -> string?
+BackgroundJobs.JobAttempt.Error.init -> void
+BackgroundJobs.JobAttempt.FinishedAt.get -> System.DateTime?
+BackgroundJobs.JobAttempt.FinishedAt.init -> void
+BackgroundJobs.JobAttempt.JobAttempt(int Attempt, System.DateTime StartedAt, System.DateTime? FinishedAt, BackgroundJobs.AttemptOutcome? Outcome, string? Error) -> void
+BackgroundJobs.JobAttempt.Outcome.get -> BackgroundJobs.AttemptOutcome?
+BackgroundJobs.JobAttempt.Outcome.init -> void
+BackgroundJobs.JobAttempt.StartedAt.get -> System.DateTime
+BackgroundJobs.JobAttempt.StartedAt.init -> void
+BackgroundJobs.JobContext
+BackgroundJobs.JobContext.Attempt.get -> int
+BackgroundJobs.JobContext.Attempt.init -> void
+BackgroundJobs.JobContext.CancellationToken.get -> System.Threading.CancellationToken
+BackgroundJobs.JobContext.CancellationToken.init -> void
+BackgroundJobs.JobContext.JobContext(System.Guid JobId, int Attempt, System.Threading.CancellationToken CancellationToken = default(System.Threading.CancellationToken)) -> void
+BackgroundJobs.JobContext.JobId.get -> System.Guid
+BackgroundJobs.JobContext.JobId.init -> void
+BackgroundJobs.JobHistoryEntry
+BackgroundJobs.JobHistoryEntry.At.get -> System.DateTime
+BackgroundJobs.JobHistoryEntry.At.init -> void
+BackgroundJobs.JobHistoryEntry.JobHistoryEntry(BackgroundJobs.JobState State, System.DateTime At, string! Reason) -> void
+BackgroundJobs.JobHistoryEntry.Reason.get -> string!
+BackgroundJobs.JobHistoryEntry.Reason.init -> void
+BackgroundJobs.JobHistoryEntry.State.get -> BackgroundJobs.JobState
+BackgroundJobs.JobHistoryEntry.State.init -> void
+BackgroundJobs.JobJson
+BackgroundJobs.JobNotFoundException
+BackgroundJobs.JobNotFoundException.JobId.get -> System.Guid
+BackgroundJobs.JobNotFoundException.JobNotFoundException(System.Guid id) -> void
+BackgroundJobs.JobOptions
+BackgroundJobs.JobOptions.IdempotencyKey.get -> string?
+BackgroundJobs.JobOptions.IdempotencyKey.init -> void
+BackgroundJobs.JobOptions.MaxAttempts.get -> int?
+BackgroundJobs.JobOptions.MaxAttempts.init -> void
+BackgroundJobs.JobOptions.Priority.get -> int?
+BackgroundJobs.JobOptions.Priority.init -> void
+BackgroundJobs.JobOptions.Queue.get -> string?
+BackgroundJobs.JobOptions.Queue.init -> void
+BackgroundJobs.JobOptions.RetryDelay.get -> System.TimeSpan?
+BackgroundJobs.JobOptions.RetryDelay.init -> void
+BackgroundJobs.JobOptions.RetryJitter.get -> System.TimeSpan?
+BackgroundJobs.JobOptions.RetryJitter.init -> void
+BackgroundJobs.JobOptions.RunAt.get -> System.DateTimeOffset?
+BackgroundJobs.JobOptions.RunAt.init -> void
+BackgroundJobs.JobQueues
+BackgroundJobs.JobRegistrationOptions
+BackgroundJobs.JobRegistrationOptions.ArgsVersion.get -> int
+BackgroundJobs.JobRegistrationOptions.ArgsVersion.set -> void
+BackgroundJobs.JobRegistrationOptions.CircuitBreaker.get -> BackgroundJobs.CircuitBreakerOptions?
+BackgroundJobs.JobRegistrationOptions.CircuitBreaker.set -> void
+BackgroundJobs.JobRegistrationOptions.JobRegistrationOptions() -> void
+BackgroundJobs.JobRegistrationOptions.MaxConcurrency.get -> int?
+BackgroundJobs.JobRegistrationOptions.MaxConcurrency.set -> void
+BackgroundJobs.JobRegistrationOptions.Timeout.get -> System.TimeSpan?
+BackgroundJobs.JobRegistrationOptions.Timeout.set -> void
+BackgroundJobs.JobRegistrationOptions.UpgradeArgs(int fromVersion, System.Func<System.Text.Json.Nodes.JsonObject!, System.Text.Json.Nodes.JsonObject!>! upgrade) -> BackgroundJobs.JobRegistrationOptions!
+BackgroundJobs.JobRegistry
+BackgroundJobs.JobRegistry.JobRegistry() -> void
+BackgroundJobs.JobRegistry.Register<TJob, TArgs>(string! name, System.Action<BackgroundJobs.JobRegistrationOptions!>? configure = null) -> BackgroundJobs.JobRegistry!
+BackgroundJobs.JobRegistry.Registrations.get -> System.Collections.Generic.IReadOnlyList<(string! Name, System.Type! ArgsType)>!
+BackgroundJobs.JobState
+BackgroundJobs.JobState.Cancelled = 6 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Deleted = 5 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Enqueued = 1 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Failed = 4 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Processing = 2 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Scheduled = 0 -> BackgroundJobs.JobState
+BackgroundJobs.JobState.Succeeded = 3 -> BackgroundJobs.JobState
+BackgroundJobs.JobStateWire
+BackgroundJobs.JobSummary
+BackgroundJobs.JobSummary.Attempts.get -> int
+BackgroundJobs.JobSummary.Attempts.init -> void
+BackgroundJobs.JobSummary.CreatedAt.get -> System.DateTime
+BackgroundJobs.JobSummary.CreatedAt.init -> void
+BackgroundJobs.JobSummary.Id.get -> System.Guid
+BackgroundJobs.JobSummary.Id.init -> void
+BackgroundJobs.JobSummary.JobSummary(System.Guid Id, string! Name, BackgroundJobs.JobState State, int Attempts, System.DateTime? ScheduledAt, System.DateTime CreatedAt, System.DateTime UpdatedAt, string! Queue = "default", int Priority = 0) -> void
+BackgroundJobs.JobSummary.Name.get -> string!
+BackgroundJobs.JobSummary.Name.init -> void
+BackgroundJobs.JobSummary.Priority.get -> int
+BackgroundJobs.JobSummary.Priority.init -> void
+BackgroundJobs.JobSummary.Queue.get -> string!
+BackgroundJobs.JobSummary.Queue.init -> void
+BackgroundJobs.JobSummary.ScheduledAt.get -> System.DateTime?
+BackgroundJobs.JobSummary.ScheduledAt.init -> void
+BackgroundJobs.JobSummary.State.get -> BackgroundJobs.JobState
+BackgroundJobs.JobSummary.State.init -> void
+BackgroundJobs.JobSummary.UpdatedAt.get -> System.DateTime
+BackgroundJobs.JobSummary.UpdatedAt.init -> void
+BackgroundJobs.JobTransition
+BackgroundJobs.JobTransition.Allows(BackgroundJobs.JobState state) -> bool
+BackgroundJobs.JobTransition.From.get -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobState>!
+BackgroundJobs.JobTransition.From.init -> void
+BackgroundJobs.JobTransition.JobTransition(string! Operation, System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobState>! From, BackgroundJobs.JobState To, string! Reason, bool ResetAttempts = false, bool RefundAttempt = false) -> void
+BackgroundJobs.JobTransition.Operation.get -> string!
+BackgroundJobs.JobTransition.Operation.init -> void
+BackgroundJobs.JobTransition.Reason.get -> string!
+BackgroundJobs.JobTransition.Reason.init -> void
+BackgroundJobs.JobTransition.RefundAttempt.get -> bool
+BackgroundJobs.JobTransition.RefundAttempt.init -> void
+BackgroundJobs.JobTransition.ResetAttempts.get -> bool
+BackgroundJobs.JobTransition.ResetAttempts.init -> void
+BackgroundJobs.JobTransition.To.get -> BackgroundJobs.JobState
+BackgroundJobs.JobTransition.To.init -> void
+BackgroundJobs.Reasons
+BackgroundJobs.RecurringJob
+BackgroundJobs.RecurringJob.Args.get -> System.Text.Json.JsonElement
+BackgroundJobs.RecurringJob.Args.init -> void
+BackgroundJobs.RecurringJob.ArgsVersion.get -> int
+BackgroundJobs.RecurringJob.ArgsVersion.init -> void
+BackgroundJobs.RecurringJob.CreatedAt.get -> System.DateTime
+BackgroundJobs.RecurringJob.CreatedAt.init -> void
+BackgroundJobs.RecurringJob.Cron.get -> string!
+BackgroundJobs.RecurringJob.Cron.init -> void
+BackgroundJobs.RecurringJob.Id.get -> string!
+BackgroundJobs.RecurringJob.Id.init -> void
+BackgroundJobs.RecurringJob.JobName.get -> string!
+BackgroundJobs.RecurringJob.JobName.init -> void
+BackgroundJobs.RecurringJob.LastJobId.get -> System.Guid?
+BackgroundJobs.RecurringJob.LastJobId.init -> void
+BackgroundJobs.RecurringJob.LastRunAt.get -> System.DateTime?
+BackgroundJobs.RecurringJob.LastRunAt.init -> void
+BackgroundJobs.RecurringJob.MaxAttempts.get -> int
+BackgroundJobs.RecurringJob.MaxAttempts.init -> void
+BackgroundJobs.RecurringJob.NextRunAt.get -> System.DateTime
+BackgroundJobs.RecurringJob.NextRunAt.init -> void
+BackgroundJobs.RecurringJob.Priority.get -> int
+BackgroundJobs.RecurringJob.Priority.init -> void
+BackgroundJobs.RecurringJob.Queue.get -> string!
+BackgroundJobs.RecurringJob.Queue.init -> void
+BackgroundJobs.RecurringJob.RecurringJob(string! Id, string! JobName, string! Cron, string! TimeZone, System.Text.Json.JsonElement Args, int ArgsVersion, int MaxAttempts, System.TimeSpan RetryDelay, System.TimeSpan RetryJitter, string! Queue, int Priority, System.DateTime NextRunAt, System.DateTime? LastRunAt, System.Guid? LastJobId, System.DateTime CreatedAt, System.DateTime UpdatedAt) -> void
+BackgroundJobs.RecurringJob.RetryDelay.get -> System.TimeSpan
+BackgroundJobs.RecurringJob.RetryDelay.init -> void
+BackgroundJobs.RecurringJob.RetryJitter.get -> System.TimeSpan
+BackgroundJobs.RecurringJob.RetryJitter.init -> void
+BackgroundJobs.RecurringJob.TimeZone.get -> string!
+BackgroundJobs.RecurringJob.TimeZone.init -> void
+BackgroundJobs.RecurringJob.UpdatedAt.get -> System.DateTime
+BackgroundJobs.RecurringJob.UpdatedAt.init -> void
+BackgroundJobs.RecurringJobIds
+BackgroundJobs.RecurringJobNotFoundException
+BackgroundJobs.RecurringJobNotFoundException.RecurringJobId.get -> string!
+BackgroundJobs.RecurringJobNotFoundException.RecurringJobNotFoundException(string! id) -> void
+BackgroundJobs.RecurringJobOptions
+BackgroundJobs.RecurringJobOptions.MaxAttempts.get -> int?
+BackgroundJobs.RecurringJobOptions.MaxAttempts.init -> void
+BackgroundJobs.RecurringJobOptions.Priority.get -> int?
+BackgroundJobs.RecurringJobOptions.Priority.init -> void
+BackgroundJobs.RecurringJobOptions.Queue.get -> string?
+BackgroundJobs.RecurringJobOptions.Queue.init -> void
+BackgroundJobs.RecurringJobOptions.RetryDelay.get -> System.TimeSpan?
+BackgroundJobs.RecurringJobOptions.RetryDelay.init -> void
+BackgroundJobs.RecurringJobOptions.RetryJitter.get -> System.TimeSpan?
+BackgroundJobs.RecurringJobOptions.RetryJitter.init -> void
+BackgroundJobs.RecurringJobOptions.TimeZone.get -> System.TimeZoneInfo?
+BackgroundJobs.RecurringJobOptions.TimeZone.init -> void
+BackgroundJobs.ServiceCollectionExtensions
+BackgroundJobs.Storage.ClaimOrder
+BackgroundJobs.Storage.ClaimOrder.Fifo = 1 -> BackgroundJobs.Storage.ClaimOrder
+BackgroundJobs.Storage.ClaimOrder.Priority = 0 -> BackgroundJobs.Storage.ClaimOrder
+BackgroundJobs.Storage.ClaimRequest
+BackgroundJobs.Storage.ClaimRequest.ClaimRequest(string! Queue, BackgroundJobs.Storage.ClaimOrder Order, string! NodeId, System.DateTime Now, System.TimeSpan LeaseDuration, int Limit, System.Collections.Generic.IReadOnlyCollection<string!>! ExcludedNames, System.Collections.Generic.IReadOnlyDictionary<string!, int>! ConcurrencyLimits) -> void
+BackgroundJobs.Storage.ClaimRequest.ConcurrencyLimits.get -> System.Collections.Generic.IReadOnlyDictionary<string!, int>!
+BackgroundJobs.Storage.ClaimRequest.ConcurrencyLimits.init -> void
+BackgroundJobs.Storage.ClaimRequest.ExcludedNames.get -> System.Collections.Generic.IReadOnlyCollection<string!>!
+BackgroundJobs.Storage.ClaimRequest.ExcludedNames.init -> void
+BackgroundJobs.Storage.ClaimRequest.LeaseDuration.get -> System.TimeSpan
+BackgroundJobs.Storage.ClaimRequest.LeaseDuration.init -> void
+BackgroundJobs.Storage.ClaimRequest.Limit.get -> int
+BackgroundJobs.Storage.ClaimRequest.Limit.init -> void
+BackgroundJobs.Storage.ClaimRequest.NodeId.get -> string!
+BackgroundJobs.Storage.ClaimRequest.NodeId.init -> void
+BackgroundJobs.Storage.ClaimRequest.Now.get -> System.DateTime
+BackgroundJobs.Storage.ClaimRequest.Now.init -> void
+BackgroundJobs.Storage.ClaimRequest.Order.get -> BackgroundJobs.Storage.ClaimOrder
+BackgroundJobs.Storage.ClaimRequest.Order.init -> void
+BackgroundJobs.Storage.ClaimRequest.Queue.get -> string!
+BackgroundJobs.Storage.ClaimRequest.Queue.init -> void
+BackgroundJobs.Storage.ClaimedJob
+BackgroundJobs.Storage.ClaimedJob.ArgsJson.get -> string!
+BackgroundJobs.Storage.ClaimedJob.ArgsJson.init -> void
+BackgroundJobs.Storage.ClaimedJob.ArgsVersion.get -> int
+BackgroundJobs.Storage.ClaimedJob.ArgsVersion.init -> void
+BackgroundJobs.Storage.ClaimedJob.Attempt.get -> int
+BackgroundJobs.Storage.ClaimedJob.Attempt.init -> void
+BackgroundJobs.Storage.ClaimedJob.AttemptId.get -> System.Guid
+BackgroundJobs.Storage.ClaimedJob.AttemptId.init -> void
+BackgroundJobs.Storage.ClaimedJob.ClaimedJob(System.Guid Id, string! Name, string! ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, int Version, System.Guid AttemptId, int Run, int RefundedAttempts) -> void
+BackgroundJobs.Storage.ClaimedJob.CountedAttempts.get -> int
+BackgroundJobs.Storage.ClaimedJob.Id.get -> System.Guid
+BackgroundJobs.Storage.ClaimedJob.Id.init -> void
+BackgroundJobs.Storage.ClaimedJob.MaxAttempts.get -> int
+BackgroundJobs.Storage.ClaimedJob.MaxAttempts.init -> void
+BackgroundJobs.Storage.ClaimedJob.Name.get -> string!
+BackgroundJobs.Storage.ClaimedJob.Name.init -> void
+BackgroundJobs.Storage.ClaimedJob.RefundedAttempts.get -> int
+BackgroundJobs.Storage.ClaimedJob.RefundedAttempts.init -> void
+BackgroundJobs.Storage.ClaimedJob.RetryDelayMs.get -> int
+BackgroundJobs.Storage.ClaimedJob.RetryDelayMs.init -> void
+BackgroundJobs.Storage.ClaimedJob.RetryJitterMs.get -> int
+BackgroundJobs.Storage.ClaimedJob.RetryJitterMs.init -> void
+BackgroundJobs.Storage.ClaimedJob.Run.get -> int
+BackgroundJobs.Storage.ClaimedJob.Run.init -> void
+BackgroundJobs.Storage.ClaimedJob.Version.get -> int
+BackgroundJobs.Storage.ClaimedJob.Version.init -> void
+BackgroundJobs.Storage.IJobSignals
+BackgroundJobs.Storage.IJobSignals.JobsReady() -> void
+BackgroundJobs.Storage.IJobSignals.SchedulesChanged() -> void
+BackgroundJobs.Storage.IJobStore
+BackgroundJobs.Storage.IJobStore.ApplyAsync(System.Guid id, BackgroundJobs.JobTransition! transition, System.DateTime now, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+BackgroundJobs.Storage.IJobStore.CancelAsync(System.Guid id, System.DateTime now, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<bool>!
+BackgroundJobs.Storage.IJobStore.ClaimAsync(BackgroundJobs.Storage.ClaimRequest! request, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.Storage.ClaimedJob!>!>!
+BackgroundJobs.Storage.IJobStore.DueRecurringAsync(System.DateTime now, int limit, System.Collections.Generic.IReadOnlyCollection<string!>! excludedIds, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.RecurringJob!>!>!
+BackgroundJobs.Storage.IJobStore.FinishAsync(BackgroundJobs.Storage.ClaimedJob! job, string! nodeId, BackgroundJobs.JobTransition! transition, BackgroundJobs.AttemptOutcome outcome, string? error, System.DateTime finishedAt, System.DateTime? retryAt, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<bool>!
+BackgroundJobs.Storage.IJobStore.FireRecurringAsync(BackgroundJobs.Storage.RecurringFire! fire, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<BackgroundJobs.Storage.RecurringFireResult>!
+BackgroundJobs.Storage.IJobStore.GetAsync(System.Guid id, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<BackgroundJobs.Job?>!
+BackgroundJobs.Storage.IJobStore.GetRecurringAsync(string! id, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<BackgroundJobs.RecurringJob?>!
+BackgroundJobs.Storage.IJobStore.InsertAsync(BackgroundJobs.Storage.NewJob! job, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Guid>!
+BackgroundJobs.Storage.IJobStore.ListAsync(System.Guid? after, int limit, bool descending, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobSummary!>!>!
+BackgroundJobs.Storage.IJobStore.ListRecurringAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.RecurringJob!>!>!
+BackgroundJobs.Storage.IJobStore.MigrateAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+BackgroundJobs.Storage.IJobStore.NextRecurringAtAsync(System.Collections.Generic.IReadOnlyCollection<string!>! excludedIds, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.DateTime?>!
+BackgroundJobs.Storage.IJobStore.NextRunAtAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.DateTime?>!
+BackgroundJobs.Storage.IJobStore.PromoteDueAsync(System.DateTime now, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<int>!
+BackgroundJobs.Storage.IJobStore.PurgeFinishedAsync(System.DateTime finishedBefore, int limit, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<int>!
+BackgroundJobs.Storage.IJobStore.QueueStatsAsync(System.DateTime now, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.Storage.QueueStats!>!>!
+BackgroundJobs.Storage.IJobStore.RecoverAsync(System.DateTime now, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<int>!
+BackgroundJobs.Storage.IJobStore.RegisterConsumerAsync(string! nodeId, System.Collections.Generic.IReadOnlyCollection<string!>! queues, System.DateTime now, System.DateTime aliveUntil, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+BackgroundJobs.Storage.IJobStore.RemoveRecurringAsync(string! id, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<bool>!
+BackgroundJobs.Storage.IJobStore.RenewLeasesAsync(string! nodeId, System.Collections.Generic.IReadOnlyCollection<System.Guid>! ids, System.DateTime now, System.TimeSpan leaseDuration, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<BackgroundJobs.Storage.LeaseRenewal!>!
+BackgroundJobs.Storage.IJobStore.UpsertRecurringAsync(BackgroundJobs.Storage.RecurringDefinition! definition, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<BackgroundJobs.RecurringJob!>!
+BackgroundJobs.Storage.IJobStoreListener
+BackgroundJobs.Storage.IJobStoreListener.RunAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+BackgroundJobs.Storage.JobSignalsExtensions
+BackgroundJobs.Storage.LeaseRenewal
+BackgroundJobs.Storage.LeaseRenewal.CancelRequested.get -> System.Collections.Generic.IReadOnlyCollection<System.Guid>!
+BackgroundJobs.Storage.LeaseRenewal.CancelRequested.init -> void
+BackgroundJobs.Storage.LeaseRenewal.LeaseRenewal(System.Collections.Generic.IReadOnlyCollection<System.Guid>! Renewed, System.Collections.Generic.IReadOnlyCollection<System.Guid>! CancelRequested) -> void
+BackgroundJobs.Storage.LeaseRenewal.Renewed.get -> System.Collections.Generic.IReadOnlyCollection<System.Guid>!
+BackgroundJobs.Storage.LeaseRenewal.Renewed.init -> void
+BackgroundJobs.Storage.NewJob
+BackgroundJobs.Storage.NewJob.ArgsJson.get -> string!
+BackgroundJobs.Storage.NewJob.ArgsJson.init -> void
+BackgroundJobs.Storage.NewJob.ArgsVersion.get -> int
+BackgroundJobs.Storage.NewJob.ArgsVersion.init -> void
+BackgroundJobs.Storage.NewJob.Creation.get -> BackgroundJobs.JobTransition!
+BackgroundJobs.Storage.NewJob.Id.get -> System.Guid
+BackgroundJobs.Storage.NewJob.Id.init -> void
+BackgroundJobs.Storage.NewJob.IdempotencyKey.get -> string?
+BackgroundJobs.Storage.NewJob.IdempotencyKey.init -> void
+BackgroundJobs.Storage.NewJob.MaxAttempts.get -> int
+BackgroundJobs.Storage.NewJob.MaxAttempts.init -> void
+BackgroundJobs.Storage.NewJob.Name.get -> string!
+BackgroundJobs.Storage.NewJob.Name.init -> void
+BackgroundJobs.Storage.NewJob.NewJob(System.Guid Id, string! Name, string! ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, System.DateTime? RunAt, System.DateTime Now, string! Queue, int Priority, string? IdempotencyKey = null) -> void
+BackgroundJobs.Storage.NewJob.Now.get -> System.DateTime
+BackgroundJobs.Storage.NewJob.Now.init -> void
+BackgroundJobs.Storage.NewJob.Priority.get -> int
+BackgroundJobs.Storage.NewJob.Priority.init -> void
+BackgroundJobs.Storage.NewJob.Queue.get -> string!
+BackgroundJobs.Storage.NewJob.Queue.init -> void
+BackgroundJobs.Storage.NewJob.RetryDelayMs.get -> int
+BackgroundJobs.Storage.NewJob.RetryDelayMs.init -> void
+BackgroundJobs.Storage.NewJob.RetryJitterMs.get -> int
+BackgroundJobs.Storage.NewJob.RetryJitterMs.init -> void
+BackgroundJobs.Storage.NewJob.RunAt.get -> System.DateTime?
+BackgroundJobs.Storage.NewJob.RunAt.init -> void
+BackgroundJobs.Storage.QueueStats
+BackgroundJobs.Storage.QueueStats.HasConsumer.get -> bool
+BackgroundJobs.Storage.QueueStats.HasConsumer.init -> void
+BackgroundJobs.Storage.QueueStats.OldestReadyAt.get -> System.DateTime?
+BackgroundJobs.Storage.QueueStats.OldestReadyAt.init -> void
+BackgroundJobs.Storage.QueueStats.Queue.get -> string!
+BackgroundJobs.Storage.QueueStats.Queue.init -> void
+BackgroundJobs.Storage.QueueStats.QueueStats(string! Queue, long Ready, System.DateTime? OldestReadyAt, bool HasConsumer) -> void
+BackgroundJobs.Storage.QueueStats.Ready.get -> long
+BackgroundJobs.Storage.QueueStats.Ready.init -> void
+BackgroundJobs.Storage.RecurringDefinition
+BackgroundJobs.Storage.RecurringDefinition.ArgsJson.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.ArgsJson.init -> void
+BackgroundJobs.Storage.RecurringDefinition.ArgsVersion.get -> int
+BackgroundJobs.Storage.RecurringDefinition.ArgsVersion.init -> void
+BackgroundJobs.Storage.RecurringDefinition.Cron.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.Cron.init -> void
+BackgroundJobs.Storage.RecurringDefinition.Id.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.Id.init -> void
+BackgroundJobs.Storage.RecurringDefinition.JobName.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.JobName.init -> void
+BackgroundJobs.Storage.RecurringDefinition.MaxAttempts.get -> int
+BackgroundJobs.Storage.RecurringDefinition.MaxAttempts.init -> void
+BackgroundJobs.Storage.RecurringDefinition.NextRunAt.get -> System.DateTime
+BackgroundJobs.Storage.RecurringDefinition.NextRunAt.init -> void
+BackgroundJobs.Storage.RecurringDefinition.Now.get -> System.DateTime
+BackgroundJobs.Storage.RecurringDefinition.Now.init -> void
+BackgroundJobs.Storage.RecurringDefinition.Priority.get -> int
+BackgroundJobs.Storage.RecurringDefinition.Priority.init -> void
+BackgroundJobs.Storage.RecurringDefinition.Queue.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.Queue.init -> void
+BackgroundJobs.Storage.RecurringDefinition.RecurringDefinition(string! Id, string! JobName, string! Cron, string! TimeZone, string! ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, string! Queue, int Priority, System.DateTime NextRunAt, System.DateTime Now) -> void
+BackgroundJobs.Storage.RecurringDefinition.RetryDelayMs.get -> int
+BackgroundJobs.Storage.RecurringDefinition.RetryDelayMs.init -> void
+BackgroundJobs.Storage.RecurringDefinition.RetryJitterMs.get -> int
+BackgroundJobs.Storage.RecurringDefinition.RetryJitterMs.init -> void
+BackgroundJobs.Storage.RecurringDefinition.TimeZone.get -> string!
+BackgroundJobs.Storage.RecurringDefinition.TimeZone.init -> void
+BackgroundJobs.Storage.RecurringFire
+BackgroundJobs.Storage.RecurringFire.Definition.get -> BackgroundJobs.RecurringJob!
+BackgroundJobs.Storage.RecurringFire.Definition.init -> void
+BackgroundJobs.Storage.RecurringFire.Job.get -> BackgroundJobs.Storage.NewJob!
+BackgroundJobs.Storage.RecurringFire.Job.init -> void
+BackgroundJobs.Storage.RecurringFire.NextRunAt.get -> System.DateTime?
+BackgroundJobs.Storage.RecurringFire.NextRunAt.init -> void
+BackgroundJobs.Storage.RecurringFire.Occurrence.get -> System.DateTime?
+BackgroundJobs.Storage.RecurringFire.Occurrence.init -> void
+BackgroundJobs.Storage.RecurringFire.RecurringFire(BackgroundJobs.RecurringJob! Definition, System.DateTime? Occurrence, System.DateTime? NextRunAt, BackgroundJobs.Storage.NewJob! Job) -> void
+BackgroundJobs.Storage.RecurringFireResult
+BackgroundJobs.Storage.RecurringFireResult.Fired = 0 -> BackgroundJobs.Storage.RecurringFireResult
+BackgroundJobs.Storage.RecurringFireResult.Gone = 2 -> BackgroundJobs.Storage.RecurringFireResult
+BackgroundJobs.Storage.RecurringFireResult.Stale = 1 -> BackgroundJobs.Storage.RecurringFireResult
+const BackgroundJobs.BackgroundJobsTelemetry.Name = "BackgroundJobs" -> string!
+const BackgroundJobs.JobOptions.MaxIdempotencyKeyLength = 200 -> int
+const BackgroundJobs.JobQueues.Default = "default" -> string!
+const BackgroundJobs.JobQueues.DefaultPriority = 0 -> int
+const BackgroundJobs.JobQueues.MaxPriority = 100 -> int
+const BackgroundJobs.JobQueues.MinPriority = -100 -> int
+const BackgroundJobs.Reasons.BecameDue = "became_due" -> string!
+const BackgroundJobs.Reasons.CancelledByUser = "cancelled_by_user" -> string!
+const BackgroundJobs.Reasons.Claimed = "claimed" -> string!
+const BackgroundJobs.Reasons.Created = "created" -> string!
+const BackgroundJobs.Reasons.DeletedByUser = "deleted_by_user" -> string!
+const BackgroundJobs.Reasons.InterruptedByShutdown = "interrupted_by_shutdown" -> string!
+const BackgroundJobs.Reasons.MaxAttemptsExhausted = "max_attempts_exhausted" -> string!
+const BackgroundJobs.Reasons.RecoveredAfterCrash = "recovered_after_crash" -> string!
+const BackgroundJobs.Reasons.RequeuedByUser = "requeued_by_user" -> string!
+const BackgroundJobs.Reasons.RetryScheduled = "retry_scheduled" -> string!
+const BackgroundJobs.Reasons.ScheduledAtCreation = "scheduled_at_creation" -> string!
+const BackgroundJobs.Reasons.Succeeded = "succeeded" -> string!
+override BackgroundJobs.CronExpression.ToString() -> string!
+static BackgroundJobs.CronExpression.Parse(string! expression) -> BackgroundJobs.CronExpression!
+static BackgroundJobs.CronExpression.TryParse(string! expression, out BackgroundJobs.CronExpression? cron) -> bool
+static BackgroundJobs.JobQueues.IsValidName(string? name) -> bool
+static BackgroundJobs.JobStateWire.CanCancel(this BackgroundJobs.JobState s) -> bool
+static BackgroundJobs.JobStateWire.CanDelete(this BackgroundJobs.JobState s) -> bool
+static BackgroundJobs.JobStateWire.CanRequeue(this BackgroundJobs.JobState s) -> bool
+static BackgroundJobs.JobStateWire.ParseOutcome(string! s) -> BackgroundJobs.AttemptOutcome
+static BackgroundJobs.JobStateWire.ParseState(string! s) -> BackgroundJobs.JobState
+static BackgroundJobs.JobStateWire.ToWire(this BackgroundJobs.AttemptOutcome o) -> string!
+static BackgroundJobs.JobStateWire.ToWire(this BackgroundJobs.JobState s) -> string!
+static BackgroundJobs.JobTransition.Create(bool scheduled) -> BackgroundJobs.JobTransition!
+static BackgroundJobs.JobTransition.Fail(bool retry) -> BackgroundJobs.JobTransition!
+static BackgroundJobs.JobTransition.Recover(int attempts, int maxAttempts) -> BackgroundJobs.JobTransition!
+static BackgroundJobs.RecurringJobIds.IsValid(string? id) -> bool
+static BackgroundJobs.ServiceCollectionExtensions.AddBackgroundJobs(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<BackgroundJobs.BackgroundJobsOptions!>? configure = null, System.Action<BackgroundJobs.JobRegistry!>? registerJobs = null) -> BackgroundJobs.BackgroundJobsBuilder!
+static BackgroundJobs.Storage.JobSignalsExtensions.Entered(this BackgroundJobs.Storage.IJobSignals! signals, BackgroundJobs.JobState state) -> void
+static readonly BackgroundJobs.JobJson.Options -> System.Text.Json.JsonSerializerOptions!
+static readonly BackgroundJobs.JobStateWire.Finished -> System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobState>!
+static readonly BackgroundJobs.JobTransition.Cancel -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Claim -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Delete -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Interrupt -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Promote -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Requeue -> BackgroundJobs.JobTransition!
+static readonly BackgroundJobs.JobTransition.Succeed -> BackgroundJobs.JobTransition!

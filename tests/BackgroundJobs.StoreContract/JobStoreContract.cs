@@ -211,6 +211,42 @@ public abstract class JobStoreContract : IAsyncLifetime
         Assert.Equal([a, b], claimed.Select(j => j.Id));
     }
 
+    [Theory]
+    [InlineData(ClaimOrder.Priority)]
+    [InlineData(ClaimOrder.Fifo)]
+    public async Task Claim_takes_only_the_requested_names_and_leaves_the_others_enqueued(ClaimOrder order)
+    {
+        var foreign = await Insert(name: "foreign", priority: 10);
+        var a = await Insert(name: "a");
+        var other = await Insert(name: "other");
+        var b = await Insert(name: "b");
+
+        var claimed = await Claim(limit: 5, order: order, names: ["a", "b"]);
+        Assert.Equal([a, b], claimed.Select(j => j.Id));
+        Assert.Equal(JobState.Enqueued, (await Get(foreign)).State);
+        Assert.Equal(0, (await Get(foreign)).Attempts);
+        Assert.Equal(JobState.Enqueued, (await Get(other)).State);
+
+        Assert.Empty(await Claim(limit: 5, order: order, names: ["a", "b"]));
+        Assert.Empty(await Claim(limit: 5, order: order, names: []));
+        Assert.Equal(new HashSet<Guid> { foreign, other }, (await Claim(limit: 5, order: order)).Select(j => j.Id).ToHashSet());
+    }
+
+    [Fact]
+    public async Task Claim_with_names_still_honours_concurrency_limits_and_exclusions()
+    {
+        var a1 = await Insert(name: "a");
+        await Insert(name: "a");
+        await Insert(name: "foreign");
+        await Insert(name: "skipped");
+        var b1 = await Insert(name: "b");
+        var b2 = await Insert(name: "b");
+
+        var claimed = await Claim(
+            limit: 5, names: ["a", "b", "skipped"], excluded: ["skipped"], limits: new Dictionary<string, int> { ["a"] = 1 });
+        Assert.Equal([a1, b1, b2], claimed.Select(j => j.Id));
+    }
+
     [Fact]
     public async Task Concurrent_claims_never_hand_out_a_job_twice()
     {
@@ -693,9 +729,12 @@ public abstract class JobStoreContract : IAsyncLifetime
     private Task<IReadOnlyList<ClaimedJob>> Claim(
         int limit = 1, ClaimOrder order = ClaimOrder.Priority, string node = Node, string queue = JobQueues.Default,
         IReadOnlyCollection<string>? excluded = null, TimeSpan? lease = null, DateTime? now = null,
-        IReadOnlyDictionary<string, int>? limits = null) =>
+        IReadOnlyDictionary<string, int>? limits = null, IReadOnlyCollection<string>? names = null) =>
         _store.ClaimAsync(
-            new ClaimRequest(queue, order, node, now ?? T0, lease ?? Lease, limit, excluded ?? [], limits ?? new Dictionary<string, int>()), Ct);
+            new ClaimRequest(queue, order, node, now ?? T0, lease ?? Lease, limit, excluded ?? [], limits ?? new Dictionary<string, int>())
+            {
+                Names = names,
+            }, Ct);
 
     private Task<bool> Finish(
         ClaimedJob job, JobTransition transition, AttemptOutcome outcome, string node = Node, string? error = null, DateTime? retryAt = null) =>

@@ -68,13 +68,18 @@ var jobs = builder.Services.AddBackgroundJobs(
         o.LeaseDuration = Milliseconds("LEASE_MS") ?? o.LeaseDuration;
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
-    registry => registry
-        .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name,
-            o => o.MaxConcurrency = Int("SUCCEED_AFTER_MAX_CONCURRENCY"))
-        .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
-        .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name)
-        .Register<SleepJob, SleepArgs>(SleepJob.Name, o => o.Timeout = Milliseconds("SLEEP_TIMEOUT_MS"))
-        .RegisterGreet(greetVersion));
+    registry =>
+    {
+        // UNREGISTERED_JOBS (comma-separated job names) leaves those out, like a node of an older deploy.
+        var skip = Env("UNREGISTERED_JOBS", "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (!skip.Contains(SucceedAfterJob.Name))
+            registry.Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name, o => o.MaxConcurrency = Int("SUCCEED_AFTER_MAX_CONCURRENCY"));
+        if (!skip.Contains(FailNTimesJob.Name))
+            registry.Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker);
+        if (!skip.Contains(LogMessageJob.Name)) registry.Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name);
+        if (!skip.Contains(SleepJob.Name)) registry.Register<SleepJob, SleepArgs>(SleepJob.Name, o => o.Timeout = Milliseconds("SLEEP_TIMEOUT_MS"));
+        if (!skip.Contains(GreetJob.Name)) registry.RegisterGreet(greetVersion);
+    });
 // Declared in code, upserted at every start.
 if (Env("RECURRING_HEARTBEAT_CRON", "") is { Length: > 0 } heartbeatCron)
     jobs.AddRecurringJob("heartbeat", LogMessageJob.Name, heartbeatCron, new LogMessageArgs("heartbeat"));

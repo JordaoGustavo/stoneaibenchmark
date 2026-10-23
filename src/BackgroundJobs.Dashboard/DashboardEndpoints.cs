@@ -8,6 +8,9 @@ using Microsoft.AspNetCore.Routing;
 
 namespace BackgroundJobs;
 
+/// <summary>
+/// The HTML dashboard (BackgroundJobs.Dashboard).
+/// </summary>
 public static class DashboardEndpoints
 {
     private const int PageSize = 50;
@@ -17,10 +20,12 @@ public static class DashboardEndpoints
 
     private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
 
+    /// <summary>
     /// Maps a server-rendered dashboard under <paramref name="prefix"/>. Opt-in.
     /// Pages are rendered from IJobClient on the server: the browser runs no script and makes no API calls;
     /// actions are same-origin form posts followed by a redirect. Protect the route group like any admin surface,
     /// e.g. <c>app.MapBackgroundJobsDashboard().RequireAuthorization("admin")</c>.
+    /// </summary>
     public static RouteGroupBuilder MapBackgroundJobsDashboard(
         this IEndpointRouteBuilder app, string prefix = "/jobs", Action<DashboardOptions>? configure = null)
     {
@@ -54,7 +59,7 @@ public static class DashboardEndpoints
             JobState? filter = null;
             if (!string.IsNullOrEmpty(state))
             {
-                if (!Enum.TryParse<JobState>(state, ignoreCase: true, out var parsed)) return Page(http, 400, "Invalid filter", Alert($"Unknown state \"{state}\"."), basePath);
+                if (!Enum.TryParse<JobState>(state, ignoreCase: true, out var parsed)) return Page(http, 400, "Invalid filter", Alert($"Unknown state \"{state}\". Use one of: {string.Join(", ", Enum.GetValues<JobState>().Select(s => s.ToWire()))}."), basePath);
                 filter = parsed;
             }
             Guid? cursor = Guid.TryParse(after, out var a) ? a : null;
@@ -199,7 +204,9 @@ public static class DashboardEndpoints
         return group;
     }
 
+    /// <summary>
     /// Walks the id-ordered list until a page of matches is filled; the store has no state index to filter on.
+    /// </summary>
     private static async Task<(List<JobSummary> Items, Guid? Next)> ScanAsync(IJobClient client, JobState? filter, Guid? after, bool descending, CancellationToken ct)
     {
         var items = new List<JobSummary>();
@@ -229,6 +236,7 @@ public static class DashboardEndpoints
         try { await action(jobId); msg = success; }
         catch (JobNotFoundException) { return NotFound(http, basePath, id); }
         catch (InvalidJobTransitionException e) { msg = e.Message; }
+        catch (IdempotencyKeyConflictException e) { msg = e.Message; }
         return Results.Redirect($"{basePath}/{jobId}?msg={Uri.EscapeDataString(msg)}");
     }
 
@@ -267,11 +275,11 @@ public static class DashboardEndpoints
         TimeSpan? retryDelay = null;
         if (Get("opt.runAt") is { } r)
         {
-            if (!DateTime.TryParse(r, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) errors.Add("Run at: a date and time expected.");
+            if (!DateTime.TryParse(r, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) errors.Add("Run at: a date and time expected, e.g. 2030-01-31 09:00.");
             else
             {
                 try { runAt = new DateTimeOffset(DashboardForms.ToUtc(d, tz), TimeSpan.Zero); }
-                catch (ArgumentException) { errors.Add($"Run at: {r} does not exist in {tz.Id} (daylight-saving change)."); }
+                catch (ArgumentException) { errors.Add($"Run at: {r} does not exist in {tz.Id} (daylight-saving change); pick a time outside the skipped hour."); }
             }
         }
         if (Get("opt.maxAttempts") is { } m)
@@ -282,15 +290,17 @@ public static class DashboardEndpoints
         if (Get("opt.retryDelayMs") is { } ms)
         {
             if (int.TryParse(ms, out var n) && n >= 0) retryDelay = TimeSpan.FromMilliseconds(n);
-            else errors.Add("Retry delay must be a whole number of milliseconds.");
+            else errors.Add("Retry delay must be a whole number of milliseconds, 0 or more.");
         }
         return runAt is null && maxAttempts is null && retryDelay is null ? null : new JobOptions { RunAt = runAt, MaxAttempts = maxAttempts, RetryDelay = retryDelay };
     }
 
     private sealed record Run(List<JobHistoryEntry> Events, List<JobAttempt> Attempts);
 
+    /// <summary>
     /// Splits history into runs: creation and every user requeue start a new one. Attempt numbers restart per run,
     /// so showing attempts grouped by run is what keeps "#1, #2, #1, #2" readable.
+    /// </summary>
     private static List<Run> Runs(Job job)
     {
         var runs = new List<Run>();
@@ -348,7 +358,9 @@ public static class DashboardEndpoints
         return $"<b>Attempt {a.Attempt}</b> <span class=\"outcome {outcome}\">{outcome}</span><span class=\"muted\">{duration}</span>";
     }
 
+    /// <summary>
     /// Top-level object properties as a key/value list; anything else as formatted JSON.
+    /// </summary>
     private static string ArgsCard(JsonElement args)
     {
         if (args.ValueKind != JsonValueKind.Object)
@@ -377,11 +389,15 @@ public static class DashboardEndpoints
     private static string Duration(TimeSpan d) =>
         d.TotalMilliseconds < 1000 ? $"{d.TotalMilliseconds:0} ms" : d.TotalSeconds < 60 ? $"{d.TotalSeconds:0.#} s" : $"{d.TotalMinutes:0.#} min";
 
+    /// <summary>
     /// Relative time for scanning, exact time in the viewer's zone on hover. Computed server-side: the page runs no script.
+    /// </summary>
     private static string Ago(DateTime t, DateTime now, TimeZoneInfo tz) =>
         $"<time datetime=\"{t:O}\" title=\"{Exact(t, tz)}\">{Relative(t, now)}</time>";
 
+    /// <summary>
     /// Absolute time in the viewer's zone; the relative age on hover.
+    /// </summary>
     private static string Local(DateTime t, TimeZoneInfo tz, DateTime now)
     {
         var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(t, DateTimeKind.Utc), tz);
@@ -417,9 +433,11 @@ public static class DashboardEndpoints
     private static TimeZoneInfo Zone(HttpContext http) =>
         http.Request.Cookies[ZoneCookie] is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var tz) ? tz : OptionsOf(http).TimeZone;
 
+    /// <summary>
     /// The one script on the dashboard: on a first visit, adopt the browser's time zone so times and the Run at picker match the
     /// viewer's clock. Only on GET, so the reload never resubmits a form. Once the cookie exists the script is not emitted again,
     /// even if the server does not know the zone (it then falls back to DashboardOptions.TimeZone), so it cannot loop.
+    /// </summary>
     private static string DetectZone(HttpContext http, string basePath, string nonce)
     {
         if (!HttpMethods.IsGet(http.Request.Method) || http.Request.Cookies.ContainsKey(ZoneCookie)) return "";
@@ -429,7 +447,9 @@ public static class DashboardEndpoints
 
     private static string Theme(HttpContext http) => http.Request.Cookies[ThemeCookie] switch { "light" => "light", "dark" => "dark", _ => "system" };
 
+    /// <summary>
     /// Header controls: a one-click theme toggle and a time zone picker, both plain form posts.
+    /// </summary>
     private static string Preferences(HttpContext http, string basePath)
     {
         var action = $"{basePath}/preferences";

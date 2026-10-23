@@ -21,7 +21,7 @@ internal sealed class JobClient(
         registration?.CheckArgs(args);
 
         var now = time.UtcNow();
-        var id = Guid.CreateVersion7(now);
+        var id = JobIds.Next(now);
         var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
             settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey);
@@ -35,7 +35,7 @@ internal sealed class JobClient(
 
     public Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default)
     {
-        if (limit is < 1 or > MaxPageSize) throw new ArgumentException($"limit must be between 1 and {MaxPageSize}");
+        if (limit is < 1 or > MaxPageSize) throw new ArgumentException($"limit is {limit}, but it must be from 1 to {MaxPageSize}; page through more with after", nameof(limit));
         return store.ListAsync(after, limit, descending, ct);
     }
 

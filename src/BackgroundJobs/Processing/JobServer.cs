@@ -5,11 +5,15 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// A recurring job declared with BackgroundJobsBuilder.AddRecurringJob, upserted at every start.
+/// </summary>
 internal sealed record RecurringSeed(string Id, Func<IRecurringJobClient, CancellationToken, Task> Apply);
 
+/// <summary>
 /// Lifecycle: migrate → recover → start loops (ready). Stopping halts claims and promotions and waits
 /// for running jobs, renewing their leases until they finish. It drains in StoppingAsync, before the web server stops, so HTTP keeps accepting enqueues.
+/// </summary>
 internal sealed class JobServer(
     IJobStore store,
     Dispatcher dispatcher,
@@ -101,7 +105,9 @@ internal sealed class JobServer(
         logger.LogInformation("job server stopped");
     }
 
+    /// <summary>
     /// The host calls StoppingAsync first; this covers hosts that only call StopAsync.
+    /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         await StoppingAsync(cancellationToken);

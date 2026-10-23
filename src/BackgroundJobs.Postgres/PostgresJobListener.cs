@@ -9,22 +9,28 @@ internal static class JobNotifications
     public const string Channel = "bj_jobs";
 }
 
+/// <summary>
 /// Owns the data source so the store and the listener share one pool.
+/// </summary>
 internal sealed class JobDataSource(NpgsqlDataSource db) : IAsyncDisposable
 {
     public NpgsqlDataSource Db => db;
     public ValueTask DisposeAsync() => db.DisposeAsync();
 }
 
+/// <summary>
 /// LISTENs on a dedicated connection and wakes the local loops, so other nodes' writes are seen in ms.
 /// Polling remains the fallback while disconnected.
+/// </summary>
 internal sealed class PostgresJobListener(JobDataSource source, IJobSignals signals, TimeProvider time, ILogger<PostgresJobListener> logger)
     : IJobStoreListener
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromMilliseconds(500), MaxBackoff = TimeSpan.FromSeconds(30);
 
+    /// <summary>
     /// A connection whose peer vanished (no FIN, no RST) waits forever for notifications: after this long without one,
     /// a ping that must answer within PingTimeout proves the connection alive, or drops it to reconnect.
+    /// </summary>
     private static readonly TimeSpan IdlePing = TimeSpan.FromSeconds(30);
     private const int PingTimeoutSeconds = 10;
 

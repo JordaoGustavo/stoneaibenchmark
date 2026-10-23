@@ -15,18 +15,22 @@ internal sealed class RecurringJobClient(
         ArgumentNullException.ThrowIfNull(cron);
         CronExpression expression;
         try { expression = CronExpression.Parse(cron); }
-        catch (FormatException e) { throw new ArgumentException(e.Message, nameof(cron), e); }
+        catch (FormatException e) { throw new ArgumentException($"recurring job '{id}': {e.Message}", nameof(cron), e); }
         var timeZone = jobOptions?.TimeZone ?? TimeZoneInfo.Utc;
         var o = jobOptions;
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
         // Unlike a one-off enqueue, a typo here would fail at every occurrence, so the name must be registered.
-        var registration = registry.Find(jobName) ?? throw new ArgumentException($"job '{jobName}' is not registered", nameof(jobName));
+        var registration = registry.Find(jobName) ?? throw new ArgumentException(
+                               $"recurring job '{id}': job '{jobName}' is not registered; register it in AddBackgroundJobs(registerJobs: r => " +
+                               $"r.Register<TJob, TArgs>(\"{jobName}\")) before declaring the recurring job, or fix the name", nameof(jobName));
         registration.CheckArgs(args);
 
         var now = time.UtcNow();
         var next = expression.GetNextOccurrence(now, timeZone)
-                   ?? throw new ArgumentException($"cron '{cron}' never fires", nameof(cron));
+                   ?? throw new ArgumentException(
+                       $"recurring job '{id}': cron '{cron}' never fires in time zone {timeZone.Id} (e.g. February 30th); fix the day and month fields",
+                       nameof(cron));
         var stored = await store.UpsertRecurringAsync(new RecurringDefinition(
             id, jobName, expression.Expression, timeZone.Id, JsonSerializer.Serialize(args, JobJson.Options),
             registration.Options.ArgsVersion, settings.MaxAttempts, settings.RetryDelayMs, settings.RetryJitterMs,

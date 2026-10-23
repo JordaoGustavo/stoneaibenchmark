@@ -11,6 +11,17 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
     public async Task MigrateAsync(CancellationToken ct)
     {
+        try { await ApplyMigrationsAsync(ct); }
+        catch (NpgsqlException e) when (!ct.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                $"BackgroundJobs could not create or migrate its tables in PostgreSQL: {e.Message}. Check that the database in the connection " +
+                "string given to UsePostgres(...) exists and is reachable, and that its user may CREATE TABLE in it; startup retries meanwhile", e);
+        }
+    }
+
+    private async Task ApplyMigrationsAsync(CancellationToken ct)
+    {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(7212300417)", transaction: tx);
@@ -49,10 +60,14 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     private static Task<Guid?> FindKeyHolderAsync(NpgsqlConnection conn, string key, NpgsqlTransaction? tx = null) =>
         conn.QuerySingleOrDefaultAsync<Guid?>($"SELECT id FROM bj_jobs WHERE idempotency_key = @key AND {KeyHeld}", new { key }, tx);
 
+    /// <summary>
     /// The predicate of the bj_jobs_idempotency_key partial index: the job holds its key.
+    /// </summary>
     private const string KeyHeld = "state IN ('scheduled', 'enqueued', 'processing')";
 
+    /// <summary>
     /// False, inserting nothing, when an unfinished job holds job.IdempotencyKey.
+    /// </summary>
     private static async Task<bool> InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job)
     {
         var creation = job.Creation;
@@ -150,6 +165,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // the partial indexes' predicate, prepared statements included: bj_jobs_ready or bj_jobs_ready_fifo.
         var order = request.Order == ClaimOrder.Priority ? "priority DESC, enqueued_at, enqueue_seq" : "enqueued_at, enqueue_seq";
         var limits = request.ConcurrencyLimits;
+        // Only names this node can run (ClaimRequest.Names): a filter on the index scan, like @excluded; constant text.
+        var onlyNames = request.Names == null ? "" : " AND name = ANY(@names)";
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
@@ -181,7 +198,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             var pass = (await conn.QueryAsync<ClaimedJob>($"""
                 WITH locked AS (
                     SELECT id, name, priority, enqueued_at, enqueue_seq FROM bj_jobs
-                    WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded))
+                    WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded)){onlyNames}
                     ORDER BY {order}
                     LIMIT @limit FOR UPDATE SKIP LOCKED
                 ), ranked AS (
@@ -212,7 +229,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 {
                     queue = request.Queue, nodeId = request.NodeId, now = request.Now, lease = request.LeaseDuration, limit = wanted,
                     attemptIds = Enumerable.Range(0, wanted).Select(_ => Guid.CreateVersion7()).ToArray(),
-                    excluded = request.ExcludedNames.Concat(atLimit).ToArray(),
+                    excluded = request.ExcludedNames.Concat(atLimit).ToArray(), names = request.Names?.ToArray() ?? [],
                     limitNames = belowLimit.Select(f => f.Key).ToArray(), limitFree = belowLimit.Select(f => f.Value).ToArray(),
                     to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
                 }, tx)).AsList();
@@ -266,7 +283,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return true;
     }
 
+    /// <summary>
     /// Leases are measured on the database's clock; <paramref name="now"/> is not used (see IJobStore.RecoverAsync).
+    /// </summary>
     public async Task<LeaseRenewal> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime now, TimeSpan leaseDuration, CancellationToken ct)
     {
         if (ids.Count == 0) return new LeaseRenewal([], []);
@@ -294,8 +313,10 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return requested;
     }
 
+    /// <summary>
     /// Expiry is checked on the database's clock, the one leases are written with; <paramref name="now"/> only stamps
     /// the history and attempts.
+    /// </summary>
     public async Task<int> RecoverAsync(DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
@@ -350,7 +371,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         }
     }
 
+    /// <summary>
     /// The shared mechanics of IJobStore for one job: guarded by version, source state and owner; always writes history.
+    /// </summary>
     private static async Task<bool> TransitionAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, Guid id, int version, JobTransition t, DateTime now, DateTime? runAt = null, string? lockedBy = null)
     {
@@ -481,7 +504,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
     private static string[] Wire(IEnumerable<JobState> states) => states.Select(s => s.ToWire()).ToArray();
 
+    /// <summary>
     /// Delivered on commit; Postgres folds identical notifications within a transaction.
+    /// </summary>
     private static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, JobState entered) =>
         entered is JobState.Enqueued or JobState.Scheduled
             ? conn.ExecuteAsync("SELECT pg_notify(@channel, @payload)", new { channel = JobNotifications.Channel, payload = entered.ToWire() }, tx)

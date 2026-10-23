@@ -44,7 +44,7 @@ public sealed class S14_ArgsVersioning(PostgresFixture pg)
 
         await using var rolledBack = await DemoProcess.StartAsync(db, env: V1);
         var failed = await rolledBack.Api.WaitForStateAsync(id, "failed");
-        Assert.Equal("args version 2 of job 'greet' is newer than the registered version 1", failed.AttemptHistory.Single().Error);
+        Assert.StartsWith("args version 2 of job 'greet' is newer than the registered version 1", failed.AttemptHistory.Single().Error);
         Assert.DoesNotContain(await rolledBack.Api.EventsAsync(), e => e.JobId == id);
     }
 

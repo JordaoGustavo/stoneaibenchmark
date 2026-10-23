@@ -1,5 +1,6 @@
 namespace BackgroundJobs;
 
+/// <summary>
 /// A cron schedule: "minute hour day-of-month month day-of-week", or six fields with seconds first.
 /// Fields take '*', '?', numbers, ranges (a-b), lists (a,b) and steps (*/n, a-b/n, a/n); months and days of the week
 /// also take names (JAN, MON); Sunday is 0 or 7. When both day fields are restricted a day matching either one
@@ -7,20 +8,28 @@ namespace BackgroundJobs;
 /// Occurrences are wall-clock times of a time zone: one that falls in a daylight-saving gap is skipped. In a repeated
 /// hour a schedule that runs every hour (e.g. "*/5 * * * *") keeps running through both passes; any other schedule
 /// (e.g. "30 1 * * *") runs only in the first.
+/// </summary>
 public sealed class CronExpression
 {
     private static readonly string[] MonthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     private static readonly string[] DayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
+    /// <summary>
     /// A schedule that matches nothing within this many years matches nothing at all (e.g. "0 0 30 2 *").
+    /// </summary>
     private const int SearchYears = 30;
 
     private readonly bool[] _seconds, _minutes, _hours, _daysOfMonth, _months, _daysOfWeek;
     private readonly bool _anyDayOfMonth, _anyDayOfWeek, _everyHour;
 
+    /// <summary>
+    /// The expression as given, trimmed (macros are not expanded).
+    /// </summary>
     public string Expression { get; }
 
+    /// <summary>
     /// Whether the expression has a seconds field.
+    /// </summary>
     public bool HasSeconds { get; }
 
     private CronExpression(string expression, string[] fields)
@@ -56,10 +65,13 @@ public sealed class CronExpression
         };
         var fields = expanded.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (fields.Length is not (5 or 6))
-            throw new FormatException($"cron '{expression}' must have 5 fields (minute hour day month weekday) or 6 (with seconds first)");
+            throw new FormatException($"cron '{expression}' has {fields.Length} fields; use 5 (minute hour day-of-month month day-of-week, e.g. \"*/5 * * * *\"), 6 with seconds first, or a macro such as @daily");
         return new CronExpression(text, fields);
     }
 
+    /// <summary>
+    /// Like <see cref="Parse"/>, but returns false instead of throwing.
+    /// </summary>
     public static bool TryParse(string expression, out CronExpression? cron)
     {
         try
@@ -74,7 +86,9 @@ public sealed class CronExpression
         }
     }
 
+    /// <summary>
     /// The first occurrence strictly after <paramref name="fromUtc"/>, in UTC; null when the schedule never matches.
+    /// </summary>
     public DateTime? GetNextOccurrence(DateTime fromUtc, TimeZoneInfo timeZone)
     {
         ArgumentNullException.ThrowIfNull(timeZone);
@@ -116,7 +130,9 @@ public sealed class CronExpression
         ? new DateTime(t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second)
         : new DateTime(t.Year, t.Month, t.Day, t.Hour, t.Minute, 0);
 
+    /// <summary>
     /// The first wall-clock time at or after <paramref name="t"/> the fields match.
+    /// </summary>
     private DateTime? NextMatch(DateTime t, int limitYear)
     {
         while (t.Year <= limitYear)
@@ -157,7 +173,7 @@ public sealed class CronExpression
             {
                 [var r] => (r, null),
                 [var r, var s] => (r, s),
-                _ => throw Invalid(field, what),
+                _ => throw Invalid(field, what, min, max),
             };
             int from, to;
             if (range is "*" or "?") (from, to) = (min, max);
@@ -169,8 +185,8 @@ public sealed class CronExpression
                 to = stepText == null ? from : max;
             }
             var step = 1;
-            if (stepText != null && (!int.TryParse(stepText, out step) || step < 1)) throw Invalid(field, what);
-            if (from > to) throw Invalid(field, what);
+            if (stepText != null && (!int.TryParse(stepText, out step) || step < 1)) throw Invalid(field, what, min, max);
+            if (from > to) throw Invalid(field, what, min, max);
             for (var v = from; v <= to; v += step) set[v] = true;
         }
         return set;
@@ -179,11 +195,16 @@ public sealed class CronExpression
         {
             var index = names == null ? -1 : Array.IndexOf(names, text.ToUpperInvariant());
             var value = index >= 0 ? index + min : int.TryParse(text, out var n) ? n : -1;
-            return value >= min && value <= max ? value : throw Invalid(field, what);
+            return value >= min && value <= max ? value : throw Invalid(field, what, min, max);
         }
     }
 
-    private static FormatException Invalid(string field, string what) => new($"cron {what} field '{field}' is invalid");
+    private static FormatException Invalid(string field, string what, int min, int max) =>
+        new($"cron {what} field '{field}' is invalid; use '*', a value from {min} to {max}, a range (a-b), a list (a,b) or a step (*/n)" +
+            (what is "month" ? ", or names (JAN-DEC)" : what is "day of week" ? ", or names (SUN-SAT; Sunday is 0 or 7)" : ""));
 
+    /// <summary>
+    /// <see cref="Expression"/>.
+    /// </summary>
     public override string ToString() => Expression;
 }

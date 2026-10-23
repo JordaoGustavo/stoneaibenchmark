@@ -8,14 +8,19 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace BackgroundJobs;
 
+/// <summary>
+/// The JSON management API and health endpoints (BackgroundJobs.AspNetCore).
+/// </summary>
 public static class ManagementEndpoints
 {
     private sealed record UpsertRecurringRequest(string Job, string Cron, JsonElement Args, string? TimeZone = null, RecurringRequestOptions? Options = null);
 
     private sealed record RecurringRequestOptions(string? Queue = null, int? Priority = null, int? MaxAttempts = null, int? RetryDelayMs = null, int? RetryJitterMs = null);
 
+    /// <summary>
     /// Maps /api/jobs (list, get, delete, requeue, cancel), /api/recurring (list, get, put, delete, trigger), /health and
     /// /health/details. Opt-in.
+    /// </summary>
     public static IEndpointRouteBuilder MapBackgroundJobsApi(this IEndpointRouteBuilder app)
     {
         app.MapGet("/health", (JobServerHealthCheck health) => health.IsReady
@@ -65,11 +70,11 @@ public static class ManagementEndpoints
             Guid? cursor = null;
             if (after != null)
             {
-                if (!Guid.TryParse(after, out var parsed)) return Error(400, "after must be a job id");
+                if (!Guid.TryParse(after, out var parsed)) return Error(400, $"after '{after}' is not a job id; pass the nextCursor of the previous page");
                 cursor = parsed;
             }
             var pageSize = limit ?? 1000;
-            if (pageSize is < 1 or > 1000) return Error(400, "limit must be between 1 and 1000");
+            if (pageSize is < 1 or > 1000) return Error(400, $"limit {pageSize} is out of range; use 1 to 1000 and page through more with after");
             var page = await client.ListAsync(cursor, pageSize, ct: ct);
             return Results.Ok(new
             {
@@ -117,8 +122,8 @@ public static class ManagementEndpoints
             try
             {
                 var request = await JsonSerializer.DeserializeAsync<UpsertRecurringRequest>(http.Body, JsonSerializerOptions.Web, ct);
-                if (request?.Job == null || request.Cron == null) return Error(400, "job and cron are required");
-                if (request.Args.ValueKind != JsonValueKind.Object) return Error(400, "args must be an object");
+                if (request?.Job == null || request.Cron == null) return Error(400, "job and cron are required: send { \"job\": \"<registered job name>\", \"cron\": \"*/5 * * * *\", \"args\": { } }");
+                if (request.Args.ValueKind != JsonValueKind.Object) return Error(400, "args must be a JSON object; send { } for a job that takes no args");
                 var o = request.Options;
                 var options = new RecurringJobOptions
                 {
@@ -131,7 +136,15 @@ public static class ManagementEndpoints
                 };
                 return Results.Ok(ToView(await client.UpsertAsync(id, request.Job, request.Cron, request.Args, options, ct)));
             }
-            catch (Exception e) when (e is JsonException or ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException)
+            catch (Exception e) when (e is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                return Error(400, $"timeZone is not a time zone of this server ({e.Message}); use an IANA id such as \"America/Sao_Paulo\" or \"UTC\"");
+            }
+            catch (JsonException e)
+            {
+                return Error(400, $"the body is not valid JSON for a recurring job ({e.Message}); send {{ \"job\", \"cron\", \"args\", \"timeZone\"?, \"options\"? }}");
+            }
+            catch (ArgumentException e)
             {
                 return Error(400, e.Message);
             }
@@ -175,6 +188,9 @@ public static class ManagementEndpoints
         updatedAt = r.UpdatedAt,
     };
 
+    /// <summary>
+    /// The API's error shape: <c>{ "error": message }</c> with <paramref name="status"/>.
+    /// </summary>
     public static IResult Error(int status, string message) => Results.Json(new { error = message }, statusCode: status);
 
     private static async Task<IResult> WithJob(string id, Func<Guid, Task<IResult>> action)

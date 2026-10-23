@@ -4,8 +4,10 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// Promotes due scheduled jobs (new schedules and retries) to enqueued and fires due recurring definitions. Sleeps until
 /// the next run_at or recurring occurrence (capped by SchedulerMaxWait) and wakes early when either changes.
+/// </summary>
 internal sealed class Scheduler(
     IJobStore store, StoreCircuitBreaker storeBreaker, Signals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time,
     ILogger<Scheduler> logger)
@@ -13,8 +15,10 @@ internal sealed class Scheduler(
     private const int RecurringBatch = 100;
     private static readonly TimeSpan StuckBackoff = TimeSpan.FromMilliseconds(100);
 
+    /// <summary>
     /// Definitions this node cannot schedule (a time zone or cron it cannot read); neither changes while the process
     /// runs, so they are left to other nodes and logged once.
+    /// </summary>
     private readonly HashSet<string> _unusable = [];
 
     public async Task RunAsync(CancellationToken ct)
@@ -41,8 +45,10 @@ internal sealed class Scheduler(
         }
     }
 
+    /// <summary>
     /// Fires every due definition once, whatever number of its occurrences were missed, and moves it to its next
     /// occurrence after now. A definition upserted meanwhile is read again on the next pass.
+    /// </summary>
     private async Task<bool> FireDueRecurringAsync(CancellationToken ct)
     {
         while (true)

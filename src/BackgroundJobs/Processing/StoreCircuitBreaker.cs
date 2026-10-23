@@ -2,8 +2,10 @@ using Microsoft.Extensions.Logging;
 
 namespace BackgroundJobs.Processing;
 
+/// <summary>
 /// Shared by every loop that touches the database: after a failure, all of them back off
 /// exponentially (100 ms → 5 s) until a call succeeds again.
+/// </summary>
 internal sealed class StoreCircuitBreaker(TimeProvider time, ILogger<StoreCircuitBreaker> logger)
 {
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(5);

@@ -2,17 +2,23 @@ using System.Text.Json;
 
 namespace BackgroundJobs.Storage.InMemory;
 
+/// <summary>
 /// IJobStore kept in this process, one lock instead of row locks. Rules come from JobTransition; this class only
 /// implements the shared mechanics described on IJobStore.
+/// </summary>
 internal sealed class InMemoryJobStore : IJobStore
 {
     private readonly Lock _lock = new();
     private readonly Dictionary<Guid, Row> _jobs = [];
     private long _enqueueSeq;
+    /// <summary>
     /// (node, queue) → alive until.
+    /// </summary>
     private readonly Dictionary<(string Node, string Queue), DateTime> _consumers = [];
     private readonly SortedDictionary<string, RecurringJob> _recurring = new(StringComparer.Ordinal);
+    /// <summary>
     /// Idempotency key → the unfinished job holding it; kept by Enter.
+    /// </summary>
     private readonly Dictionary<string, Guid> _keyHolders = new(StringComparer.Ordinal);
 
     public Task MigrateAsync(CancellationToken ct) => Task.CompletedTask;
@@ -22,7 +28,9 @@ internal sealed class InMemoryJobStore : IJobStore
         lock (_lock) return Task.FromResult(InsertLocked(job));
     }
 
+    /// <summary>
     /// Callers hold the lock.
+    /// </summary>
     private Guid InsertLocked(NewJob job)
     {
         if (job.IdempotencyKey != null && _keyHolders.TryGetValue(job.IdempotencyKey, out var holder)) return holder;
@@ -87,10 +95,12 @@ internal sealed class InMemoryJobStore : IJobStore
     public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct)
     {
         var (queue, order, nodeId, now, leaseDuration, limit, excludedNames, limits) = request;
+        var names = request.Names;
         lock (_lock)
         {
             var candidates = _jobs.Values
-                .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name));
+                .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name)
+                    && (names == null || names.Contains(r.Name)));
             var ordered = (order == ClaimOrder.Priority ? candidates.OrderByDescending(r => r.Priority) : candidates.OrderBy(_ => 0))
                 .ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq);
             // Free slots per limited name, spent as jobs are taken; a job whose name has none left is skipped.
@@ -136,7 +146,9 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(true);
     }
 
+    /// <summary>
     /// One process, one clock: the caller's now is the store's.
+    /// </summary>
     public Task<LeaseRenewal> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime now, TimeSpan leaseDuration, CancellationToken ct)
     {
         List<Guid> renewed = [], cancelRequested = [];
@@ -288,7 +300,9 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(RecurringFireResult.Fired);
     }
 
+    /// <summary>
     /// The shared mechanics of IJobStore, guarded by source state and version. Callers hold the lock.
+    /// </summary>
     private bool Apply(Row r, JobTransition t, int expectedVersion, DateTime? runAt, DateTime now)
     {
         if (r.Version != expectedVersion || !t.Allows(r.State)) return false;
@@ -321,7 +335,9 @@ internal sealed class InMemoryJobStore : IJobStore
     private sealed class Row
     {
         public Guid Id { get; init; }
+        /// <summary>
         /// Text form: its ordinal order is the uuid order of the Postgres store.
+        /// </summary>
         public string Key => Id.ToString();
         public required string Name { get; init; }
         public required string ArgsJson { get; init; }

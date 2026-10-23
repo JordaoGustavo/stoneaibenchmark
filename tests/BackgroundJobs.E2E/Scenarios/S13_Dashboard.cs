@@ -54,6 +54,24 @@ public sealed class S13_Dashboard(PostgresFixture pg)
         Assert.DoesNotContain($"action=\"/jobs/{id}/cancel\"", await (await demo.Api.GetRawAsync($"/jobs/{id}")).Content.ReadAsStringAsync());
     }
 
+    /// Same conflict as the API's 409 (S19): the dashboard shows it instead of failing with a 500.
+    [Fact]
+    public async Task Dashboard_requeue_whose_idempotency_key_is_taken_shows_the_conflict()
+    {
+        await using var demo = await DemoProcess.StartAsync(null);
+        var first = await demo.Api.EnqueueAsync("log-message", new { message = "a" }, new { idempotencyKey = "k" });
+        await demo.Api.WaitForStateAsync(first, "succeeded");
+        var holder = await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 0 },
+            new { idempotencyKey = "k", runAt = DateTimeOffset.UtcNow.AddMinutes(10) });
+
+        using var http = new HttpClient { BaseAddress = demo.Api.BaseAddress };
+        var response = await http.PostAsync($"/jobs/{first}/requeue", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(holder, await response.Content.ReadAsStringAsync());
+        Assert.Equal("succeeded", (await demo.Api.GetJobAsync(first)).State);
+    }
+
     /// A first visit adopts the browser's time zone via a cookie; once the cookie is set the script is gone.
     [Fact]
     public async Task Dashboard_detects_browser_time_zone_once()
