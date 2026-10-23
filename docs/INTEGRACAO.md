@@ -234,6 +234,7 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
 | `PollInterval` | `250ms` | Polling de fallback da fila (o caminho normal é LISTEN/NOTIFY do Postgres) |
 | `SchedulerMaxWait` | `5s` | Espera máxima do agendador; normalmente dorme até o próximo `run_at` ou acorda por notificação |
+| `FifoClaimEvery` | `10` | A cada N jobs pegos de uma fila, um é o mais antigo dela, ignorando a prioridade (anti-starvation). `null` = prioridade estrita; ≥ 2 |
 | `ClaimBatchSize` | `null` | Máximo de jobs por claim, por fila; `null` = tantos quanto a fila tiver slots livres (nunca acima dos workers dela) |
 | `DefaultMaxAttempts` | `3` | Padrão de `JobOptions.MaxAttempts` |
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
@@ -306,7 +307,7 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 
 - **Retry:** atraso **fixo** (`RetryDelay` + jitter aleatório opcional), não exponencial. A tentativa falha volta a `scheduled` e é promovida quando vencer.
 - **Filas:** cada job pertence a uma fila (`JobOptions.Queue`, padrão `default`), fixa por toda a vida dele (retries e requeues voltam para a mesma). Cada fila consumida (`Queues`) tem **seus próprios workers**: uma fila lotada de jobs lentos não atrasa outra. Uma fila que nenhum processo consome guarda seus jobs em `enqueued`; diferentes processos podem consumir filas diferentes do mesmo banco.
-- **Ordem:** dentro da fila, maior `Priority` primeiro; empate em ordem FIFO de entrada em `enqueued` (retries, recuperações e requeues vão para o fim da sua prioridade). Com 1 worker na fila a ordem de execução é estrita. Prioridade é estrita: um fluxo contínuo de jobs de prioridade alta faz os de baixa esperarem; isole cargas que não podem esperar em filas próprias.
+- **Ordem:** dentro da fila, maior `Priority` primeiro; empate em ordem FIFO de entrada em `enqueued` (retries, recuperações e requeues vão para o fim da sua prioridade). Com 1 worker na fila a ordem de execução é estrita. Para que um fluxo contínuo de prioridade alta não segure os de baixa para sempre, a cada `FifoClaimEvery` (padrão 10) jobs pegos de uma fila um é o mais antigo dela, qualquer que seja a prioridade; cargas que não podem esperar nada ficam melhor em filas próprias.
 - **Workers:** um job só é reivindicado quando a sua fila tem slot livre (sem prefetch), então nunca rodam mais que os workers da fila por processo. Vários processos podem compartilhar o banco (`FOR UPDATE SKIP LOCKED`).
 - **Circuit breaker por tipo de job (opt-in):** após N falhas consecutivas, o tipo para de ser reivindicado por um tempo; depois deixa passar um único job de teste (half-open).
 
@@ -339,11 +340,14 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   junto com `NewJob.Creation`. O store só aplica a transição de forma atômica, seguindo a mecânica comum descrita no
   comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
   FIFO ao entrar em `enqueued`, grava o histórico.
-  `ClaimAsync` recebe **uma fila** e devolve os jobs prontos dela em ordem (prioridade desc, entrada, sequência). Mantenha
-  os prontos de cada fila indexados nessa ordem, para o claim ler só o início de uma fila: no Postgres é o índice parcial
-  `bj_jobs_ready (queue, priority DESC, enqueued_at, enqueue_seq) WHERE state = 'enqueued'`; num Redis, um sorted set por
-  fila com score `(MaxPriority - priority) * 2^40 + sequência` (exato em `double` para as prioridades de `JobQueues`, que
-  por isso são limitadas). `QueueStatsAsync` devolve uma entrada por fila com jobs prontos.
+  `ClaimAsync(ClaimRequest)` recebe **uma fila** e uma ordem: `Priority` (prioridade desc, entrada, sequência) ou `Fifo`
+  (entrada, sequência). Mantenha os prontos de cada fila indexados nas duas ordens, para o claim ler só o início de uma
+  fila: no Postgres são os índices parciais `bj_jobs_ready` e `bj_jobs_ready_fifo` (o claim escreve `state = 'enqueued'`
+  literal, senão o plano genérico de um statement preparado não usa índice parcial); num Redis, dois sorted sets por fila,
+  um com score `(MaxPriority - priority) * 2^40 + sequência` (exato em `double` para as prioridades de `JobQueues`, que por
+  isso são limitadas) e outro com score `sequência`.
+  `RegisterConsumerAsync` grava quais filas cada nó consome, com validade (num Redis, uma chave com TTL por nó e fila);
+  `QueueStatsAsync` devolve uma entrada por fila com jobs prontos e se algum nó vivo a consome.
 - **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via
   `IJobSignals`. As mudanças do próprio nó já acordam os loops pelo núcleo; sem listener, outros nós são vistos no polling.
 - Um método de extensão `UseXxx(this BackgroundJobsBuilder)` que faz `Services.Replace` de `IJobStore` e `IJobStoreListener`
@@ -424,7 +428,7 @@ Ou use as rotas de `MapBackgroundJobsApi()`: `/health` (readiness, contrato da s
 }
 ```
 
-A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. `ready`/`oldestReadyAgeSeconds`/`stalled` somam só as filas consumidas; `queues[]` detalha cada uma (filas consumidas vazias aparecem com 0, e as demais com jobs prontos com `consumed: false`). Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
+A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. `ready`/`oldestReadyAgeSeconds`/`stalled` somam só as filas consumidas; `queues[]` detalha cada uma (filas consumidas vazias aparecem com 0, e as demais com jobs prontos com `consumed: false`). `orphaned: true` (e status `degraded`) quando **nenhum nó vivo** consome a fila e o job mais antigo dela espera há mais que `StalledQueueThreshold`, por exemplo um enqueue numa fila com nome errado. Cada nó renova o registro das suas filas a cada `LeaseDuration / 3`. Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
 
 ### OpenTelemetry
 
@@ -478,7 +482,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 - **Entrega at-least-once:** um job pode executar mais de uma vez (crash, ou banco indisponível por mais que `LeaseDuration` durante a execução). **Escreva jobs idempotentes.**
 - **Cancelamento cooperativo:** .NET não mata threads; um job que ignora o token continua rodando (sem worker, até `MaxAbandonedJobs`) até voltar, e atrasa o shutdown até `ShutdownTimeout`. Depois de um `ShutdownTimeout`, outro nó pode rodar o job enquanto este processo ainda encerra.
 - **Retry fixo**, sem backoff exponencial nativo (use `RetryJitter` para espalhar).
-- **Prioridade estrita**, sem aging: jobs de prioridade baixa podem esperar indefinidamente atrás de um fluxo contínuo de alta. A fila e a prioridade de um job não mudam depois do enqueue.
+- **Fila e prioridade são fixas** depois do enqueue. A garantia contra starvation é uma fração dos claims (`FifoClaimEvery`), não aging.
 - **Circuit breaker de job** é por processo, não compartilhado entre nós.
 - Mantenha os args pequenos (são `jsonb` e voltam em toda consulta de detalhe).
 

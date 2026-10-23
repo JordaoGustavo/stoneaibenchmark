@@ -26,6 +26,7 @@ var jobs = builder.Services.AddBackgroundJobs(
     o =>
     {
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
+        o.FifoClaimEvery = Env("FIFO_CLAIM_EVERY", "") switch { "" => o.FifoClaimEvery, "off" => null, var n => int.Parse(n) };
         // "name=workers,name=workers"; unset consumes only the default queue with WORKER_COUNT workers.
         foreach (var queue in Env("QUEUES", "").Split(',', StringSplitOptions.RemoveEmptyEntries))
         {

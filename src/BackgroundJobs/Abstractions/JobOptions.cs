@@ -48,6 +48,11 @@ public sealed class BackgroundJobsOptions
     /// Longest the scheduler sleeps without checking the store; a fallback for missed notifications.
     public TimeSpan SchedulerMaxWait { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// Every this many jobs claimed from a queue, one is its oldest ready job whatever its priority, so a steady stream of
+    /// high-priority jobs cannot starve the low ones: they get at least 1/FifoClaimEvery of the claims. Null: strict
+    /// priority. Must be >= 2.
+    public int? FifoClaimEvery { get; set; } = 10;
+
     /// Max jobs claimed per query, per queue. Null: as many as the queue has free worker slots.
     public int? ClaimBatchSize { get; set; }
 
@@ -108,6 +113,7 @@ public sealed class BackgroundJobsOptions
             if (workers < 1) throw new ArgumentException($"Queues['{queue}'] must be >= 1");
         }
         if (ClaimBatchSize < 1) throw new ArgumentException("ClaimBatchSize must be >= 1");
+        if (FifoClaimEvery < 2) throw new ArgumentException("FifoClaimEvery must be >= 2, or null for strict priority");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
         if (QueueMonitorInterval <= TimeSpan.Zero) throw new ArgumentException("QueueMonitorInterval must be positive");
         if (StalledQueueThreshold <= TimeSpan.Zero) throw new ArgumentException("StalledQueueThreshold must be positive");

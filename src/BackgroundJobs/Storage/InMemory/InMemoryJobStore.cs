@@ -9,6 +9,8 @@ internal sealed class InMemoryJobStore : IJobStore
     private readonly Lock _lock = new();
     private readonly Dictionary<Guid, Row> _jobs = [];
     private long _enqueueSeq;
+    /// (node, queue) → alive until.
+    private readonly Dictionary<(string Node, string Queue), DateTime> _consumers = [];
 
     public Task MigrateAsync(CancellationToken ct) => Task.CompletedTask;
 
@@ -75,14 +77,15 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(promoted);
     }
 
-    public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
-        string queue, string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
+    public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct)
     {
+        var (queue, order, nodeId, now, leaseUntil, limit, excludedNames) = request;
         lock (_lock)
         {
-            var ready = _jobs.Values
-                .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name))
-                .OrderByDescending(r => r.Priority).ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
+            var candidates = _jobs.Values
+                .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name));
+            var ready = (order == ClaimOrder.Priority ? candidates.OrderByDescending(r => r.Priority) : candidates.OrderBy(_ => 0))
+                .ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
                 .Take(limit)
                 .ToList();
             IReadOnlyList<ClaimedJob> claimed = ready.Select(r =>
@@ -162,13 +165,24 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(recovered);
     }
 
-    public Task<IReadOnlyList<QueueStats>> QueueStatsAsync(CancellationToken ct)
+    public Task RegisterConsumerAsync(string nodeId, IReadOnlyCollection<string> queues, DateTime now, DateTime aliveUntil, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            foreach (var key in _consumers.Keys.Where(k => k.Node == nodeId || _consumers[k] < now).ToList()) _consumers.Remove(key);
+            foreach (var queue in queues) _consumers[(nodeId, queue)] = aliveUntil;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<QueueStats>> QueueStatsAsync(DateTime now, CancellationToken ct)
     {
         lock (_lock)
         {
             IReadOnlyList<QueueStats> stats = _jobs.Values.Where(r => r.State == JobState.Enqueued)
                 .GroupBy(r => r.Queue)
-                .Select(g => new QueueStats(g.Key, g.Count(), g.Min(r => r.EnqueuedAt)))
+                .Select(g => new QueueStats(g.Key, g.Count(), g.Min(r => r.EnqueuedAt),
+                    _consumers.Any(c => c.Key.Queue == g.Key && c.Value >= now)))
                 .ToList();
             return Task.FromResult(stats);
         }

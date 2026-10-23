@@ -40,7 +40,8 @@ public sealed class JobServerHealthCheck : IHealthCheck
         var queue = new QueueHealth(
             sample?.Ready, sample?.OldestReadyAge, sample?.At, sample != null && sample.OldestReadyAge > threshold, threshold,
             sample?.Queues.Select(q => new QueueDepthHealth(
-                q.Queue, _options.Value.ConsumedQueues.ContainsKey(q.Queue), q.Ready, q.OldestReadyAge)).ToList() ?? []);
+                q.Queue, _options.Value.ConsumedQueues.ContainsKey(q.Queue), q.Ready, q.OldestReadyAge,
+                !q.HasConsumer && q.Ready > 0 && q.OldestReadyAge > threshold)).ToList() ?? []);
         var breakers = _breakers.Snapshot()
             .Select(b => new CircuitBreakerHealth(b.Job, b.State, b.ConsecutiveFailures, b.OpenUntil)).ToList();
         var o = _options.Value;
@@ -49,7 +50,7 @@ public sealed class JobServerHealthCheck : IHealthCheck
         var abandoned = new AbandonedHealth(jobs, o.MaxAbandonedJobs, o.MaxAbandonedJobs > 0 && jobs.Count >= o.MaxAbandonedJobs,
             jobs.Any(j => j.Age > o.AbandonedJobAlertAfter), o.AbandonedJobAlertAfter);
         var status = !IsReady || abandoned.Full ? HealthStatus.Unhealthy
-            : queue.Stalled || breakers.Any(b => b.State == "open") || abandoned.Alert ? HealthStatus.Degraded
+            : queue.Stalled || queue.Queues.Any(q => q.Orphaned) || breakers.Any(b => b.State == "open") || abandoned.Alert ? HealthStatus.Degraded
             : HealthStatus.Healthy;
         return new JobServerHealthReport(status, IsReady, queue, breakers, abandoned, now);
     }
@@ -79,6 +80,9 @@ public sealed class JobServerHealthCheck : IHealthCheck
     private static string Describe(JobServerHealthReport report) => string.Join("; ", new[]
     {
         report.Queue.Stalled ? $"queue stalled: oldest ready job waiting {report.Queue.OldestReadyAge!.Value.TotalSeconds:0}s" : null,
+        report.Queue.Queues.Any(q => q.Orphaned)
+            ? "queues no node consumes: " + string.Join(", ", report.Queue.Queues.Where(q => q.Orphaned).Select(q => q.Queue))
+            : null,
         report.CircuitBreakers.Any(b => b.State == "open")
             ? "circuit breakers open: " + string.Join(", ", report.CircuitBreakers.Where(b => b.State == "open").Select(b => b.Job))
             : null,
@@ -104,8 +108,9 @@ public sealed record AbandonedJobHealth(Guid Id, string Name, DateTimeOffset Sin
 public sealed record QueueHealth(
     long? Ready, TimeSpan? OldestReadyAge, DateTimeOffset? SampledAt, bool Stalled, TimeSpan StalledThreshold, IReadOnlyList<QueueDepthHealth> Queues);
 
-/// Consumed: whether this node has workers for the queue.
-public sealed record QueueDepthHealth(string Queue, bool Consumed, long Ready, TimeSpan OldestReadyAge);
+/// Consumed: whether this node has workers for the queue. Orphaned: no live node consumes it and its oldest ready job has
+/// waited longer than the stalled threshold, e.g. a job enqueued into a misspelled queue.
+public sealed record QueueDepthHealth(string Queue, bool Consumed, long Ready, TimeSpan OldestReadyAge, bool Orphaned);
 
 /// State: closed, open or half-open.
 public sealed record CircuitBreakerHealth(string Job, string State, int ConsecutiveFailures, DateTimeOffset? OpenUntil);

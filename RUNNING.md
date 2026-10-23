@@ -18,6 +18,7 @@ dotnet run --project src/BackgroundJobs.Demo
 | `DATABASE_URL` | `Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs` (também aceita `postgres://user:pass@host:5432/db`) |
 | `NODE_ID`      | nome da máquina                                                              |
 | `QUEUES`       | vazio = só `default` com `WORKER_COUNT` workers; ex. `default=4,critical=2`  |
+| `FIFO_CLAIM_EVERY` | `10`; `off` = prioridade estrita                                          |
 
 `POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro).
 

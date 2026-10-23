@@ -111,19 +111,21 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return promoted;
     }
 
-    public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
-        string queue, string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
+    public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct)
     {
+        // A constant per order, never user input. State spelled out (= JobTransition.Claim.From) so the planner can prove
+        // the partial indexes' predicate, prepared statements included: bj_jobs_ready or bj_jobs_ready_fifo.
+        var order = request.Order == ClaimOrder.Priority ? "priority DESC, enqueued_at, enqueue_seq" : "enqueued_at, enqueue_seq";
         await using var conn = await db.OpenConnectionAsync(ct);
         // One statement = one transaction: claim, attempts++, open attempts, history.
-        var rows = await conn.QueryAsync<ClaimedJob>("""
+        var rows = await conn.QueryAsync<ClaimedJob>($"""
             WITH locked AS (
                 SELECT id, priority, enqueued_at, enqueue_seq FROM bj_jobs
-                WHERE queue = @queue AND state = ANY(@from) AND NOT (name = ANY(@excluded))
-                ORDER BY priority DESC, enqueued_at, enqueue_seq
+                WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded))
+                ORDER BY {order}
                 LIMIT @limit FOR UPDATE SKIP LOCKED
             ), next AS (
-                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY priority DESC, enqueued_at, enqueue_seq)] AS attempt_id FROM locked
+                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY {order})] AS attempt_id FROM locked
             ), claimed AS (
                 UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
                        updated_at = @now, locked_by = @nodeId, lease_expires_at = @leaseUntil
@@ -139,19 +141,37 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
                    version, attempt_id, run, refunded_attempts
             FROM claimed
-            ORDER BY priority DESC, enqueued_at, enqueue_seq
+            ORDER BY {order}
             """,
-            new { queue, nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(),
-                from = Wire(JobTransition.Claim.From), to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason });
+            new
+            {
+                queue = request.Queue, nodeId = request.NodeId, now = request.Now, leaseUntil = request.LeaseUntil, limit = request.Limit,
+                attemptIds = Enumerable.Range(0, request.Limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = request.ExcludedNames.ToArray(),
+                to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
+            });
         return rows.AsList();
     }
 
-    public async Task<IReadOnlyList<QueueStats>> QueueStatsAsync(CancellationToken ct)
+    public async Task RegisterConsumerAsync(string nodeId, IReadOnlyCollection<string> queues, DateTime now, DateTime aliveUntil, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<(string Queue, long Ready, DateTime? OldestReadyAt)>(
-            "SELECT queue, count(*), min(enqueued_at) FROM bj_jobs WHERE state = 'enqueued' GROUP BY queue");
-        return rows.Select(r => new QueueStats(r.Queue, r.Ready, r.OldestReadyAt)).ToList();
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await conn.ExecuteAsync("DELETE FROM bj_queue_consumers WHERE node_id = @nodeId OR alive_until < @now", new { nodeId, now }, tx);
+        await conn.ExecuteAsync(
+            "INSERT INTO bj_queue_consumers (queue, node_id, alive_until) SELECT unnest(@queues), @nodeId, @aliveUntil",
+            new { queues = queues.ToArray(), nodeId, aliveUntil }, tx);
+        await tx.CommitAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<QueueStats>> QueueStatsAsync(DateTime now, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<(string Queue, long Ready, DateTime? OldestReadyAt, bool HasConsumer)>("""
+            SELECT j.queue, count(*), min(j.enqueued_at),
+                   EXISTS (SELECT 1 FROM bj_queue_consumers c WHERE c.queue = j.queue AND c.alive_until >= @now)
+            FROM bj_jobs j WHERE j.state = 'enqueued' GROUP BY j.queue
+            """, new { now });
+        return rows.Select(r => new QueueStats(r.Queue, r.Ready, r.OldestReadyAt, r.HasConsumer)).ToList();
     }
 
     public async Task<bool> FinishAsync(

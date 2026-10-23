@@ -2,11 +2,17 @@ namespace BackgroundJobs.Processing;
 
 internal sealed record CircuitBreakerStatus(string Job, string State, int ConsecutiveFailures, DateTimeOffset? OpenUntil);
 
+/// What one claim of one queue may take. Blocked: names it must skip. Trials: half-open names reserved for this claim
+/// alone; the dispatcher claims them one job at a time, so a batch cannot take several trials of the same type.
+internal sealed record ClaimPermit(IReadOnlyCollection<string> Blocked, IReadOnlyCollection<string> Trials);
+
 /// Opt-in, in-memory, per job type. Open: the dispatcher does not claim the type.
-/// After the break it lets exactly one trial job through (half-open) before closing again.
+/// After the break it lets exactly one trial job through (half-open) before closing again. Queues claim concurrently,
+/// so the trial is reserved for one claim of one queue at a time; every other claim skips the type meanwhile. A claim
+/// that does not find the type hands the reservation back, so the queues take turns until one has a job of the type.
 internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
 {
-    private enum Phase { Closed, Open, HalfOpenIdle, HalfOpenTrial }
+    private enum Phase { Closed, Open, HalfOpenIdle, HalfOpenReserved, HalfOpenTrial }
 
     private sealed class State
     {
@@ -18,20 +24,35 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
     private readonly Dictionary<string, State> _states = [];
     private readonly Lock _lock = new();
 
-    /// Job names the dispatcher must not claim right now.
-    public IReadOnlyCollection<string> BlockedNames()
+    /// Call before a claim, then <see cref="EndClaim"/> with what it claimed.
+    public ClaimPermit BeginClaim()
     {
         var now = time.GetUtcNow();
         lock (_lock)
         {
-            var blocked = new List<string>();
+            List<string> blocked = [], trials = [];
             foreach (var (name, s) in _states)
             {
                 if (s.Phase == Phase.Open && now >= s.OpenUntil) s.Phase = Phase.HalfOpenIdle;
-                if (s.Phase is Phase.Open or Phase.HalfOpenTrial) blocked.Add(name);
+                if (s.Phase == Phase.HalfOpenIdle)
+                {
+                    s.Phase = Phase.HalfOpenReserved;
+                    trials.Add(name);
+                }
+                else if (s.Phase != Phase.Closed) blocked.Add(name);
             }
-            return blocked;
+            return new ClaimPermit(blocked, trials);
         }
+    }
+
+    /// A reserved trial becomes the trial when its type was claimed, and is offered again otherwise.
+    public void EndClaim(ClaimPermit permit, IEnumerable<string> claimedNames)
+    {
+        var claimed = claimedNames.ToHashSet();
+        lock (_lock)
+            foreach (var name in permit.Trials)
+                if (_states.TryGetValue(name, out var s) && s.Phase == Phase.HalfOpenReserved)
+                    s.Phase = claimed.Contains(name) ? Phase.HalfOpenTrial : Phase.HalfOpenIdle;
     }
 
     /// Every job type with a breaker configured, closed ones included, ordered by name.
@@ -49,20 +70,6 @@ internal sealed class JobCircuitBreaker(JobRegistry registry, TimeProvider time)
                     _ => new CircuitBreakerStatus(r.Name, "half-open", s.Failures, null),
                 };
             }).ToList();
-    }
-
-    /// True while some type awaits its half-open trial: the dispatcher then claims one job at a time,
-    /// so a batch cannot take several trials of the same type.
-    public bool TrialPending()
-    {
-        lock (_lock) return _states.Values.Any(s => s.Phase == Phase.HalfOpenIdle);
-    }
-
-    /// Called serially by the dispatcher right after a claim, so only one half-open trial is ever taken.
-    public void OnClaimed(string name)
-    {
-        lock (_lock)
-            if (_states.TryGetValue(name, out var s) && s.Phase == Phase.HalfOpenIdle) s.Phase = Phase.HalfOpenTrial;
     }
 
     public void OnFinished(string name, bool success)

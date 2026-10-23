@@ -17,9 +17,6 @@ internal sealed class Dispatcher(
 {
     private readonly Dictionary<Guid, Task> _running = [];
     private readonly Lock _lock = new();
-    // Claims of all queues, one at a time: a claim and its OnClaimed must not interleave with another queue's, or two
-    // queues could each take the half-open trial of the same job type.
-    private readonly SemaphoreSlim _claimGate = new(1, 1);
 
     public IReadOnlyCollection<Guid> RunningIds()
     {
@@ -43,6 +40,8 @@ internal sealed class Dispatcher(
         var wake = signals.ForQueue(queue);
         // Not disposed: running jobs of this queue release it after this loop returned.
         var slots = new SemaphoreSlim(workers, workers);
+        // Jobs claimed in priority order since the last FIFO claim (see BackgroundJobsOptions.FifoClaimEvery).
+        var sinceFifo = 0;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -52,21 +51,38 @@ internal sealed class Dispatcher(
                 var max = Math.Min(o.ClaimBatchSize ?? workers, workers);
                 while (free < max && slots.Wait(0)) free++;
 
+                // Up to three claims fill the free slots: one job that may be a reserved half-open trial, the oldest job when
+                // a FIFO claim is due, then the rest by priority. A claim that comes back short means nothing more is ready.
                 // Never cancel a claim halfway: a committed claim must reach the executor.
-                IReadOnlyList<ClaimedJob> jobs;
-                await _claimGate.WaitAsync(CancellationToken.None);
+                var jobs = new List<ClaimedJob>();
+                var permit = jobBreaker.BeginClaim();
                 try
                 {
-                    jobs = await storeBreaker.TryAsync("claim", () =>
+                    var full = true;
+                    if (permit.Trials.Count > 0)
+                        full = await ClaimAsync(ClaimOrder.Priority, 1, permit.Blocked);
+                    var skipped = permit.Blocked.Concat(permit.Trials).ToList();
+                    if (full && jobs.Count < free && o.FifoClaimEvery is { } every && sinceFifo >= every - 1)
+                    {
+                        full = await ClaimAsync(ClaimOrder.Fifo, 1, skipped);
+                        if (full) sinceFifo = 0;
+                    }
+                    if (full && jobs.Count < free) await ClaimAsync(ClaimOrder.Priority, free - jobs.Count, skipped);
+                }
+                finally { jobBreaker.EndClaim(permit, jobs.Select(j => j.Name)); }
+
+                async Task<bool> ClaimAsync(ClaimOrder order, int limit, IReadOnlyCollection<string> excluded)
+                {
+                    var claimed = await storeBreaker.TryAsync("claim", () =>
                     {
                         var now = time.UtcNow();
-                        var blocked = jobBreaker.BlockedNames();
-                        var limit = jobBreaker.TrialPending() ? 1 : free;
-                        return store.ClaimAsync(queue, o.NodeId, now, now + o.LeaseDuration, limit, blocked, CancellationToken.None);
+                        return store.ClaimAsync(
+                            new ClaimRequest(queue, order, o.NodeId, now, now + o.LeaseDuration, limit, excluded), CancellationToken.None);
                     }, CancellationToken.None) ?? [];
-                    foreach (var job in jobs) jobBreaker.OnClaimed(job.Name);
+                    jobs.AddRange(claimed);
+                    if (order == ClaimOrder.Priority) sinceFifo += claimed.Count;
+                    return claimed.Count == limit;
                 }
-                finally { _claimGate.Release(); }
 
                 if (free > jobs.Count) slots.Release(free - jobs.Count);
                 if (jobs.Count == 0)

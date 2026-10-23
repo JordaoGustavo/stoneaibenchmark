@@ -3,7 +3,8 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-internal sealed record QueueDepth(string Queue, long Ready, TimeSpan OldestReadyAge);
+/// HasConsumer: some live node, this one or another, consumes the queue.
+internal sealed record QueueDepth(string Queue, long Ready, TimeSpan OldestReadyAge, bool HasConsumer);
 
 /// Ready/OldestReadyAge cover the queues this node consumes, the ones its health depends on. Queues lists those (empty
 /// ones at 0) and every other queue with ready jobs.
@@ -23,14 +24,16 @@ internal sealed class QueueMonitor(
     {
         while (!ct.IsCancellationRequested)
         {
-            var stats = await storeBreaker.TryAsync("queue-stats", () => store.QueueStatsAsync(ct), ct);
+            var stats = await storeBreaker.TryAsync("queue-stats", () => store.QueueStatsAsync(time.UtcNow(), ct), ct);
             if (stats != null)
             {
                 var now = time.UtcNow();
                 var consumedNames = options.Value.ConsumedQueues.Keys;
                 var queues = stats
-                    .Select(s => new QueueDepth(s.Queue, s.Ready, s.OldestReadyAt is { } oldest && oldest < now ? now - oldest : TimeSpan.Zero))
-                    .Concat(consumedNames.Where(q => stats.All(s => s.Queue != q)).Select(q => new QueueDepth(q, 0, TimeSpan.Zero)))
+                    .Select(s => new QueueDepth(
+                        s.Queue, s.Ready, s.OldestReadyAt is { } oldest && oldest < now ? now - oldest : TimeSpan.Zero,
+                        s.HasConsumer || consumedNames.Contains(s.Queue)))
+                    .Concat(consumedNames.Where(q => stats.All(s => s.Queue != q)).Select(q => new QueueDepth(q, 0, TimeSpan.Zero, true)))
                     .OrderBy(q => q.Queue, StringComparer.Ordinal).ToList();
                 var consumed = queues.Where(q => consumedNames.Contains(q.Queue)).ToList();
                 _latest = new QueueSample(consumed.Sum(q => q.Ready), consumed.Select(q => q.OldestReadyAge).DefaultIfEmpty().Max(), now, queues);

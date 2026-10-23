@@ -34,7 +34,7 @@ public static class ManagementEndpoints
                     sampledAt = r.Queue.SampledAt?.UtcDateTime,
                     queues = r.Queue.Queues.Select(q => new
                     {
-                        name = q.Queue, consumed = q.Consumed, ready = q.Ready, oldestReadyAgeSeconds = q.OldestReadyAge.TotalSeconds,
+                        name = q.Queue, consumed = q.Consumed, orphaned = q.Orphaned, ready = q.Ready, oldestReadyAgeSeconds = q.OldestReadyAge.TotalSeconds,
                     }),
                 },
                 circuitBreakers = r.CircuitBreakers.Select(b => new

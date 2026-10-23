@@ -44,6 +44,7 @@ internal sealed class JobServer(
                        // Our own node id: jobs it held were interrupted by our previous crash; no need to wait for the lease.
                        var recovered = await store.RecoverAsync(time.UtcNow(), o.NodeId, ct);
                        logger.LogInformation("recovered {Count} interrupted jobs", recovered);
+                       await LeaseHeartbeat.RegisterAsync(store, o, time, ct);
                        return true;
                    }, ct) != true)
                 ct.ThrowIfCancellationRequested();
