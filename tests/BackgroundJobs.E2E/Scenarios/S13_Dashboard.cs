@@ -22,4 +22,18 @@ public sealed class S13_Dashboard(PostgresFixture pg)
         Assert.Equal(HttpStatusCode.OK, detail.StatusCode);
         Assert.Contains(id, await detail.Content.ReadAsStringAsync());
     }
+
+    [Fact]
+    public async Task Dashboard_cancels_a_waiting_job()
+    {
+        await using var demo = await DemoProcess.StartAsync(null);
+        var id = await demo.Api.EnqueueAsync("log-message", new { message = "never" }, new { runAt = DateTime.UtcNow.AddMinutes(5) });
+
+        Assert.Contains($"action=\"/jobs/{id}/cancel\"", await (await demo.Api.GetRawAsync($"/jobs/{id}")).Content.ReadAsStringAsync());
+        using var http = new HttpClient { BaseAddress = demo.Api.BaseAddress };
+        await http.PostAsync($"/jobs/{id}/cancel", null);
+
+        Assert.Equal("cancelled", (await demo.Api.GetJobAsync(id)).State);
+        Assert.DoesNotContain($"action=\"/jobs/{id}/cancel\"", await (await demo.Api.GetRawAsync($"/jobs/{id}")).Content.ReadAsStringAsync());
+    }
 }

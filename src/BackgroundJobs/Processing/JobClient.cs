@@ -4,7 +4,8 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-internal sealed class JobClient(IJobStore store, JobRegistry registry, IJobSignals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
+internal sealed class JobClient(
+    IJobStore store, JobRegistry registry, IJobSignals signals, CancelRequests cancels, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
 {
     public const int MaxPageSize = 1000;
 
@@ -45,6 +46,12 @@ internal sealed class JobClient(IJobStore store, JobRegistry registry, IJobSigna
     public Task DeleteAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Delete, ct);
 
     public Task RequeueAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Requeue, ct);
+
+    public async Task CancelAsync(Guid id, CancellationToken ct = default)
+    {
+        // A no-op unless the job runs in this process; other nodes learn of the request from their heartbeat.
+        if (await store.CancelAsync(id, time.UtcNow(), ct)) cancels.Request(id);
+    }
 
     private async Task ApplyAsync(Guid id, JobTransition transition, CancellationToken ct)
     {

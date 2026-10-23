@@ -77,6 +77,14 @@ public static class ManagementEndpoints
                 return Results.Accepted(value: new { jobId = jobId.ToString() });
             }));
 
+        // Accepted, not OK: a processing job ends cancelled only once its code has stopped.
+        jobs.MapPost("/{id}/cancel", (IJobClient client, string id, CancellationToken ct) =>
+            WithJob(id, async jobId =>
+            {
+                await client.CancelAsync(jobId, ct);
+                return Results.Accepted(value: new { jobId = jobId.ToString() });
+            }));
+
         return app;
     }
 

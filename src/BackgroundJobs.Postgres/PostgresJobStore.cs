@@ -155,6 +155,11 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        // Locked so a concurrent CancelAsync either lands before (and is seen here) or after (and finds the job finished).
+        var cancelRequested = await conn.ExecuteScalarAsync<bool>(
+            "SELECT cancel_requested_at IS NOT NULL FROM bj_jobs WHERE id = @id FOR UPDATE", new { id = job.Id }, tx);
+        if (cancelRequested && transition != JobTransition.Succeed)
+            (transition, outcome) = (JobTransition.Cancel, AttemptOutcome.Cancelled);
         if (!await TransitionAsync(conn, tx, job.Id, job.Version, transition, finishedAt, retryAt, nodeId)) return false;
         await conn.ExecuteAsync(
             "UPDATE bj_attempts SET finished_at = @at, outcome = @outcome, error = @error WHERE id = @id",
@@ -163,13 +168,31 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return true;
     }
 
-    public async Task RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
+    public async Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
     {
-        if (ids.Count == 0) return;
+        if (ids.Count == 0) return [];
         await using var conn = await db.OpenConnectionAsync(ct);
-        await conn.ExecuteAsync(
-            "UPDATE bj_jobs SET lease_expires_at = @leaseUntil WHERE id = ANY(@ids) AND locked_by = @nodeId AND state = 'processing'",
-            new { leaseUntil, ids = ids.ToArray(), nodeId });
+        var renewed = await conn.QueryAsync<(Guid Id, bool CancelRequested)>("""
+            UPDATE bj_jobs SET lease_expires_at = @leaseUntil WHERE id = ANY(@ids) AND locked_by = @nodeId AND state = 'processing'
+            RETURNING id, cancel_requested_at IS NOT NULL
+            """, new { leaseUntil, ids = ids.ToArray(), nodeId });
+        return renewed.Where(r => r.CancelRequested).Select(r => r.Id).ToList();
+    }
+
+    public async Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var current = await conn.QuerySingleOrDefaultAsync<(string State, int Version)?>(
+            "SELECT state, version FROM bj_jobs WHERE id = @id FOR UPDATE", new { id }, tx);
+        if (current is null) throw new JobNotFoundException(id);
+        var requested = current.Value.State == JobState.Processing.ToWire();
+        if (requested)
+            await conn.ExecuteAsync("UPDATE bj_jobs SET cancel_requested_at = coalesce(cancel_requested_at, @now) WHERE id = @id", new { id, now }, tx);
+        else if (!await TransitionAsync(conn, tx, id, current.Value.Version, JobTransition.Cancel, now))
+            throw new InvalidJobTransitionException(id, JobStateWire.ParseState(current.Value.State), JobTransition.Cancel.Operation);
+        await tx.CommitAsync(ct);
+        return requested;
     }
 
     public async Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct)
@@ -177,7 +200,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var stale = (await conn.QueryAsync<StaleRow>("""
-            SELECT id, version, run, attempts, max_attempts FROM bj_jobs
+            SELECT id, version, run, attempts, max_attempts, cancel_requested_at IS NOT NULL AS cancel_requested FROM bj_jobs
             WHERE state = 'processing' AND (lease_expires_at < @now OR locked_by = @ownNodeId)
             FOR UPDATE SKIP LOCKED
             """, new { now, ownNodeId }, tx)).ToList();
@@ -185,9 +208,10 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         foreach (var job in stale)
         {
             await conn.ExecuteAsync(
-                "UPDATE bj_attempts SET finished_at = @now, outcome = 'interrupted' WHERE job_id = @id AND run = @run AND finished_at IS NULL",
-                new { now, job.Id, job.Run }, tx);
-            await TransitionAsync(conn, tx, job.Id, job.Version, JobTransition.Recover(job.Attempts, job.MaxAttempts), now);
+                "UPDATE bj_attempts SET finished_at = @now, outcome = @outcome WHERE job_id = @id AND run = @run AND finished_at IS NULL",
+                new { now, job.Id, job.Run, outcome = (job.CancelRequested ? AttemptOutcome.Cancelled : AttemptOutcome.Interrupted).ToWire() }, tx);
+            var transition = job.CancelRequested ? JobTransition.Cancel : JobTransition.Recover(job.Attempts, job.MaxAttempts);
+            await TransitionAsync(conn, tx, job.Id, job.Version, transition, now);
         }
         await tx.CommitAsync(ct);
         return stale.Count;
@@ -215,13 +239,13 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 run_at = CASE WHEN @to = 'scheduled' THEN @runAt::timestamptz END,
                 enqueued_at = CASE WHEN @to = 'enqueued' THEN @now ELSE enqueued_at END,
                 enqueue_seq = CASE WHEN @to = 'enqueued' THEN nextval('bj_enqueue_seq') ELSE enqueue_seq END,
-                attempts = CASE WHEN @resetAttempts THEN 0 ELSE attempts END,
+                attempts = CASE WHEN @resetAttempts THEN 0 WHEN @refundAttempt THEN attempts - 1 ELSE attempts END,
                 run = CASE WHEN @resetAttempts THEN run + 1 ELSE run END,
-                locked_by = NULL, lease_expires_at = NULL
+                locked_by = NULL, lease_expires_at = NULL, cancel_requested_at = NULL
             WHERE id = @id AND version = @version AND state = ANY(@from)
               AND (@lockedBy::text IS NULL OR locked_by = @lockedBy::text)
             """,
-            new { id, version, from = Wire(t.From), to = t.To.ToWire(), now, runAt, resetAttempts = t.ResetAttempts, lockedBy },
+            new { id, version, from = Wire(t.From), to = t.To.ToWire(), now, runAt, resetAttempts = t.ResetAttempts, refundAttempt = t.RefundAttempt, lockedBy },
             tx);
         if (changed == 0) return false;
         await InsertHistoryAsync(conn, tx, id, t.To, now, t.Reason);
@@ -236,7 +260,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // SKIP LOCKED: a job being requeued right now is left alone, and concurrent sweeps on other nodes split the work.
         return await conn.ExecuteScalarAsync<int>("""
             WITH doomed AS (
-                SELECT id FROM bj_jobs WHERE state IN ('succeeded', 'failed', 'deleted') AND updated_at < @finishedBefore
+                SELECT id FROM bj_jobs WHERE state IN ('succeeded', 'failed', 'deleted', 'cancelled') AND updated_at < @finishedBefore
                 ORDER BY updated_at LIMIT @limit FOR UPDATE SKIP LOCKED
             ), history AS (
                 DELETE FROM bj_history WHERE job_id IN (SELECT id FROM doomed)
@@ -310,5 +334,6 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public int Run { get; set; }
         public int Attempts { get; set; }
         public int MaxAttempts { get; set; }
+        public bool CancelRequested { get; set; }
     }
 }

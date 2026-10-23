@@ -39,6 +39,9 @@ var jobs = builder.Services.AddBackgroundJobs(
         o.RetentionBatchSize = int.Parse(Env("RETENTION_BATCH", "1000"));
         o.DefaultJobTimeout = Milliseconds("JOB_TIMEOUT_MS") ?? Timeout.InfiniteTimeSpan;
         o.TimeoutGracePeriod = Milliseconds("TIMEOUT_GRACE_MS") ?? o.TimeoutGracePeriod;
+        o.MaxAbandonedJobs = int.Parse(Env("MAX_ABANDONED_JOBS", o.MaxAbandonedJobs.ToString()));
+        o.ShutdownTimeout = Milliseconds("SHUTDOWN_TIMEOUT_MS") ?? Timeout.InfiniteTimeSpan;
+        o.LeaseDuration = Milliseconds("LEASE_MS") ?? o.LeaseDuration;
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     registry => registry

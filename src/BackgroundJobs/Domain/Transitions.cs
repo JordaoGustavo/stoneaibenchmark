@@ -14,11 +14,14 @@ public static class Reasons
     public const string InterruptedByShutdown = "interrupted_by_shutdown";
     public const string DeletedByUser = "deleted_by_user";
     public const string RequeuedByUser = "requeued_by_user";
+    public const string CancelledByUser = "cancelled_by_user";
 }
 
 /// One move of the job state machine: the states it may start from, where it goes and the history reason it records.
 /// This is the only place the rules live; stores apply them (see IJobStore for the mechanics every store shares).
-public sealed record JobTransition(string Operation, IReadOnlyList<JobState> From, JobState To, string Reason, bool ResetAttempts = false)
+/// <param name="RefundAttempt">The attempt just made does not count against MaxAttempts.</param>
+public sealed record JobTransition(
+    string Operation, IReadOnlyList<JobState> From, JobState To, string Reason, bool ResetAttempts = false, bool RefundAttempt = false)
 {
     public bool Allows(JobState state) => From.Contains(state);
 
@@ -42,13 +45,19 @@ public sealed record JobTransition(string Operation, IReadOnlyList<JobState> Fro
         : new("recover", [JobState.Processing], JobState.Enqueued, Reasons.RecoveredAfterCrash);
 
     /// The job stopped because its server is stopping. Unlike a crash it is never the job's fault, so it is queued again
-    /// at once even with no attempts left: a deploy must not fail a job for good. The attempt is still recorded.
-    public static readonly JobTransition Interrupt = new("interrupt", [JobState.Processing], JobState.Enqueued, Reasons.InterruptedByShutdown);
+    /// at once and the attempt, still recorded, is given back: a deploy must not use up a job's budget.
+    public static readonly JobTransition Interrupt =
+        new("interrupt", [JobState.Processing], JobState.Enqueued, Reasons.InterruptedByShutdown, RefundAttempt: true);
+
+    /// Stops a job for good. A processing job is not moved directly: its node is asked to cancel it, then finishes it
+    /// with this transition (see IJobStore.CancelAsync).
+    public static readonly JobTransition Cancel =
+        new("cancel", [JobState.Scheduled, JobState.Enqueued, JobState.Processing], JobState.Cancelled, Reasons.CancelledByUser);
 
     public static readonly JobTransition Delete =
         new("delete", [JobState.Scheduled, JobState.Enqueued], JobState.Deleted, Reasons.DeletedByUser);
 
     /// Runs a finished job again from attempt 1, keeping its history.
     public static readonly JobTransition Requeue =
-        new("requeue", [JobState.Succeeded, JobState.Failed, JobState.Deleted], JobState.Enqueued, Reasons.RequeuedByUser, ResetAttempts: true);
+        new("requeue", [JobState.Succeeded, JobState.Failed, JobState.Deleted, JobState.Cancelled], JobState.Enqueued, Reasons.RequeuedByUser, ResetAttempts: true);
 }

@@ -58,6 +58,8 @@ public sealed class ApiClient(Uri baseAddress)
 
     public Task<HttpResponseMessage> RequeueAsync(string id) => _http.PostAsync($"/api/jobs/{id}/requeue", null);
 
+    public Task<HttpResponseMessage> CancelAsync(string id) => _http.PostAsync($"/api/jobs/{id}/cancel", null);
+
     public async Task<List<EventView>> EventsAsync()
     {
         var body = await _http.GetFromJsonAsync<JsonObject>("/demo/events", Json);

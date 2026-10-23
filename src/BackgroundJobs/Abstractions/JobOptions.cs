@@ -39,9 +39,18 @@ public sealed class BackgroundJobsOptions
     /// <see cref="JobRegistrationOptions.Timeout"/> overrides it per job name. Infinite by default.
     public TimeSpan DefaultJobTimeout { get; set; } = Timeout.InfiniteTimeSpan;
 
-    /// After a timeout, how long a job that ignores its token is waited for. Then the attempt is recorded as failed and its
-    /// worker freed, while the job's code may still be running in the background.
+    /// After a timeout or a cancel, how long a job that ignores its token keeps its worker. Then the worker is freed for
+    /// other jobs while the job's code keeps running; the job stays processing (its lease renewed, so it never runs twice)
+    /// until the code returns, and that result is recorded.
     public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// Most jobs that may run past their grace period at once without a worker. Beyond it, such a job keeps its worker.
+    /// Bounds the threads a pile of stuck jobs can take: at most WorkerCount + MaxAbandonedJobs jobs run at once.
+    public int MaxAbandonedJobs { get; set; } = 4;
+
+    /// When the server stops, how long running jobs are waited for after their token fired. Jobs still running then are
+    /// recorded as interrupted and requeued (their attempt given back), and the server stops. Infinite by default.
+    public TimeSpan ShutdownTimeout { get; set; } = Timeout.InfiniteTimeSpan;
 
     /// How often the ready queue is sampled for metrics and the health check.
     public TimeSpan QueueMonitorInterval { get; set; } = TimeSpan.FromSeconds(5);
@@ -76,6 +85,9 @@ public sealed class BackgroundJobsOptions
         if (!IsValidTimeout(DefaultJobTimeout))
             throw new ArgumentException("DefaultJobTimeout must be positive or Timeout.InfiniteTimeSpan");
         if (TimeoutGracePeriod < TimeSpan.Zero) throw new ArgumentException("TimeoutGracePeriod must not be negative");
+        if (MaxAbandonedJobs < 0) throw new ArgumentException("MaxAbandonedJobs must not be negative");
+        if (ShutdownTimeout < TimeSpan.Zero && ShutdownTimeout != Timeout.InfiniteTimeSpan)
+            throw new ArgumentException("ShutdownTimeout must not be negative, or Timeout.InfiniteTimeSpan");
         if (SchedulerMaxWait <= TimeSpan.Zero) throw new ArgumentException("SchedulerMaxWait must be positive");
     }
 

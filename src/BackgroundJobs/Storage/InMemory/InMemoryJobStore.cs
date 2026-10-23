@@ -105,20 +105,41 @@ internal sealed class InMemoryJobStore : IJobStore
     {
         lock (_lock)
         {
-            if (!_jobs.TryGetValue(job.Id, out var r) || r.LockedBy != nodeId || !Apply(r, transition, job.Version, retryAt, finishedAt))
-                return Task.FromResult(false);
+            if (!_jobs.TryGetValue(job.Id, out var r) || r.LockedBy != nodeId) return Task.FromResult(false);
+            if (r.CancelRequestedAt != null && transition != JobTransition.Succeed)
+                (transition, outcome) = (JobTransition.Cancel, AttemptOutcome.Cancelled);
+            if (!Apply(r, transition, job.Version, retryAt, finishedAt)) return Task.FromResult(false);
             r.AttemptLog.Single(a => a.Id == job.AttemptId).Close(finishedAt, outcome, error);
         }
         return Task.FromResult(true);
     }
 
-    public Task RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
+    public Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
     {
+        var cancelRequested = new List<Guid>();
         lock (_lock)
             foreach (var id in ids)
                 if (_jobs.TryGetValue(id, out var r) && r.LockedBy == nodeId && r.State == JobState.Processing)
+                {
                     r.LeaseExpiresAt = leaseUntil;
-        return Task.CompletedTask;
+                    if (r.CancelRequestedAt != null) cancelRequested.Add(id);
+                }
+        return Task.FromResult<IReadOnlyCollection<Guid>>(cancelRequested);
+    }
+
+    public Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            if (!_jobs.TryGetValue(id, out var r)) throw new JobNotFoundException(id);
+            if (r.State == JobState.Processing)
+            {
+                r.CancelRequestedAt ??= now;
+                return Task.FromResult(true);
+            }
+            if (!Apply(r, JobTransition.Cancel, r.Version, null, now)) throw new InvalidJobTransitionException(id, r.State, JobTransition.Cancel.Operation);
+        }
+        return Task.FromResult(false);
     }
 
     public Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct)
@@ -131,9 +152,10 @@ internal sealed class InMemoryJobStore : IJobStore
                 .ToList();
             foreach (var r in stale)
             {
+                var cancel = r.CancelRequestedAt != null;
                 foreach (var a in r.AttemptLog.Where(a => a.Run == r.Run && a.FinishedAt == null))
-                    a.Close(now, AttemptOutcome.Interrupted, null);
-                var transition = JobTransition.Recover(r.Attempts, r.MaxAttempts);
+                    a.Close(now, cancel ? AttemptOutcome.Cancelled : AttemptOutcome.Interrupted, null);
+                var transition = cancel ? JobTransition.Cancel : JobTransition.Recover(r.Attempts, r.MaxAttempts);
                 if (Apply(r, transition, r.Version, null, now)) recovered++;
             }
         }
@@ -177,7 +199,9 @@ internal sealed class InMemoryJobStore : IJobStore
         r.Version++;
         r.LockedBy = null;
         r.LeaseExpiresAt = null;
+        r.CancelRequestedAt = null;
         if (t.ResetAttempts) { r.Attempts = 0; r.Run++; }
+        else if (t.RefundAttempt) r.Attempts--;
         Enter(r, t, now, runAt);
         return true;
     }
@@ -215,6 +239,7 @@ internal sealed class InMemoryJobStore : IJobStore
         public int Version { get; set; } = 1;
         public string? LockedBy { get; set; }
         public DateTime? LeaseExpiresAt { get; set; }
+        public DateTime? CancelRequestedAt { get; set; }
         public DateTime CreatedAt { get; init; }
         public DateTime UpdatedAt { get; set; }
         public List<JobHistoryEntry> History { get; } = [];

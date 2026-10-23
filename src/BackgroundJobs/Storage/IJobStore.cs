@@ -53,6 +53,8 @@ public static class JobSignalsExtensions
 /// - bumps the version, sets updated_at, clears the lock and lease, sets run_at only when entering scheduled;
 /// - entering enqueued sets enqueued_at and takes the next FIFO sequence number;
 /// - <see cref="JobTransition.ResetAttempts"/> sets attempts to 0 and starts a new run;
+/// - <see cref="JobTransition.RefundAttempt"/> decrements attempts (the next claim reuses the attempt number);
+/// - clears a pending cancel request;
 /// - appends (To, now, Reason) to the history.
 public interface IJobStore
 {
@@ -79,12 +81,22 @@ public interface IJobStore
 
     /// Applies <paramref name="transition"/> (<see cref="JobTransition.Succeed"/>, <see cref="JobTransition.Fail"/> or <see cref="JobTransition.Interrupt"/>) if this
     /// node still owns the job, and closes its attempt with <paramref name="outcome"/>. False when the job was taken away.
+    /// A pending cancel request wins over anything but success: the job is cancelled and its attempt closed as cancelled,
+    /// so a request is not lost when the attempt ends before the owning node heard of it.
     Task<bool> FinishAsync(ClaimedJob job, string nodeId, JobTransition transition, AttemptOutcome outcome, string? error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct);
 
-    Task RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct);
+    /// Returns those of <paramref name="ids"/> a user asked to cancel (see <see cref="CancelAsync"/>).
+    Task<IReadOnlyCollection<Guid>> RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct);
+
+    /// Applies <see cref="JobTransition.Cancel"/> to a scheduled or enqueued job and returns false. For a processing job it
+    /// only records the request, returned by <see cref="RenewLeasesAsync"/> to the owning node, and returns true. Recovery
+    /// cancels instead of requeuing a job whose cancel was requested. Any transition out of processing clears the request.
+    /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
+    Task<bool> CancelAsync(Guid id, DateTime now, CancellationToken ct);
 
     /// For every processing job whose lease expired (and, when given, every job held by <paramref name="ownNodeId"/>):
-    /// closes its open attempts as interrupted and applies <see cref="JobTransition.Recover"/>.
+    /// closes its open attempts as interrupted and applies <see cref="JobTransition.Recover"/>; or, when a cancel was
+    /// requested, as cancelled with <see cref="JobTransition.Cancel"/>.
     Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct);
 
     Task<QueueStats> QueueStatsAsync(CancellationToken ct);

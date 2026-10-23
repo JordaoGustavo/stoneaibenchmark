@@ -16,4 +16,10 @@ public interface IJobClient
 
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
     Task RequeueAsync(Guid id, CancellationToken ct = default);
+
+    /// Stops a job for good: a scheduled or enqueued one at once; a processing one by firing its
+    /// <see cref="JobContext.CancellationToken"/> — at once on this node, within LeaseDuration / 3 on another — after which
+    /// it ends cancelled. A job that ignores the token and completes is recorded as it ended.
+    /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
+    Task CancelAsync(Guid id, CancellationToken ct = default);
 }

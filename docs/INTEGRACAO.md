@@ -101,9 +101,11 @@ public sealed record JobContext(Guid JobId, int Attempt, CancellationToken Cance
 - **Argumentos** são serializados com `System.Text.Json` (`JsonSerializerDefaults.Web`: camelCase, case-insensitive) e guardados como `jsonb`. Use records simples e evite mudanças incompatíveis no formato enquanto houver jobs pendentes.
 - **Injeção de dependência:** cada execução abre um scope de DI novo e o job é criado com `ActivatorUtilities`, então **não precisa registrar o job no container** — apenas suas dependências. Serviços *scoped* (ex.: `DbContext`) funcionam.
 - `context.Attempt` começa em 1; útil para lógica de idempotência ou logs.
-- **`context.CancellationToken`** dispara quando a tentativa estoura o timeout ou o servidor está parando. Repasse-o para `HttpClient`, EF, `Task.Delay` etc. O cancelamento é cooperativo:
-  - **Timeout** (`DefaultJobTimeout` ou `JobRegistrationOptions.Timeout`): a tentativa falha com erro `timed out after N ms` e segue a política de retry. Se o job ignorar o token, depois de `TimeoutGracePeriod` a tentativa é registrada como falha (`... and did not stop within N ms`) e o worker é liberado; o código do job pode continuar rodando em background (sem limite de quantos), e um retry pode começar enquanto isso. Por isso jobs com timeout precisam ser idempotentes.
-  - **Parada do servidor:** se o job terminar com `OperationCanceledException`, a tentativa vira `interrupted` e o job volta para `enqueued` na hora (`interrupted_by_shutdown`), sem esperar o lease — mesmo sem tentativas restantes, para que um deploy nunca falhe um job de vez (o número da tentativa pode passar de `MaxAttempts`). Um job que ignora o token continua sendo esperado.
+- **`context.CancellationToken`** dispara quando a tentativa estoura o timeout, quando um usuário cancela o job ou quando o servidor está parando. Repasse-o para `HttpClient`, EF, `Task.Delay` etc. O cancelamento é cooperativo:
+  - **Timeout** (`DefaultJobTimeout` ou `JobRegistrationOptions.Timeout`): se o job parar (com qualquer exceção), a tentativa falha com erro `timed out after N ms` e segue a política de retry.
+  - **Cancelamento** (`IJobClient.CancelAsync`, `POST /api/jobs/{id}/cancel`, botão no dashboard): o job termina em `cancelled`, sem retry — também se a tentativa falhar, estourar o timeout ou for interrompida antes de o pedido chegar ao nó. Só um sucesso prevalece sobre o pedido.
+  - **Job que ignora o token** (timeout ou cancelamento): depois de `TimeoutGracePeriod` o worker é liberado para outros jobs, mas o job **continua em `processing`**, com o lease renovado, até o código voltar; aí o resultado real é registrado (inclusive sucesso). Como o job não sai de `processing`, nenhum retry roda em paralelo, em nenhum nó. No máximo `MaxAbandonedJobs` jobs ficam assim; além disso, o job segura o worker. **Um job que nunca volta fica em `processing` para sempre** e ocupa uma dessas vagas; com as vagas esgotadas, os próximos jobs travados seguram workers. Fique de olho em jobs há muito tempo em `processing` e no log `ignored its cancellation`.
+  - **Parada do servidor:** se o job parar, a tentativa vira `interrupted` e o job volta para `enqueued` na hora (`interrupted_by_shutdown`), sem esperar o lease e **sem gastar tentativa**: a próxima execução reusa o mesmo número de tentativa. Jobs que ignoram o token são esperados até `ShutdownTimeout` (infinito por padrão); depois são registrados do mesmo jeito e o processo encerra.
 
   ```csharp
   jobs.Register<ReportJob, ReportArgs>("report", o => o.Timeout = TimeSpan.FromMinutes(2));
@@ -170,7 +172,8 @@ Os cenários `tests/BackgroundJobs.E2E/Scenarios/S14_ArgsVersioning.cs` exercita
 | `GetAsync(id, ct)` | Retorna o `Job` completo, com histórico e tentativas | `JobNotFoundException` |
 | `ListAsync(Guid? after = null, int limit = 100, ct)` | Resumos em ordem de criação; paginação por cursor (`after` = último id visto). `limit` 1..1000 | `ArgumentException` |
 | `DeleteAsync(id, ct)` | Remove da fila (só `scheduled`/`enqueued`) | `JobNotFoundException`, `InvalidJobTransitionException` |
-| `RequeueAsync(id, ct)` | Reexecuta (só `succeeded`/`failed`/`deleted`), zera tentativas, mantém histórico | `JobNotFoundException`, `InvalidJobTransitionException` |
+| `RequeueAsync(id, ct)` | Reexecuta (só `succeeded`/`failed`/`deleted`/`cancelled`), zera tentativas, mantém histórico | `JobNotFoundException`, `InvalidJobTransitionException` |
+| `CancelAsync(id, ct)` | Para de vez (`scheduled`/`enqueued` na hora; `processing` dispara o token — na hora neste nó, em até `LeaseDuration / 3` em outro — e termina em `cancelled`) | `JobNotFoundException`, `InvalidJobTransitionException` |
 
 Erros de banco em chamadas do `IJobClient` **propagam para quem chamou** (não há retry automático no cliente).
 
@@ -218,7 +221,7 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `FinishedJobRetention` | **obrigatório** | Quanto tempo um job finalizado (`succeeded`, `failed`, `deleted`) é mantido, com histórico e tentativas. `Timeout.InfiniteTimeSpan` mantém para sempre |
+| `FinishedJobRetention` | **obrigatório** | Quanto tempo um job finalizado (`succeeded`, `failed`, `deleted`, `cancelled`) é mantido, com histórico e tentativas. `Timeout.InfiniteTimeSpan` mantém para sempre |
 | `RetentionSweepInterval` | `1min` | Frequência da limpeza de jobs finalizados |
 | `RetentionBatchSize` | `1000` | Jobs removidos por comando de limpeza (a limpeza repete até esgotar) |
 | `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
@@ -231,7 +234,9 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |
 | `DefaultJobTimeout` | `Timeout.InfiniteTimeSpan` | Tempo máximo de uma tentativa; `JobRegistrationOptions.Timeout` sobrescreve por tipo |
-| `TimeoutGracePeriod` | `5s` | Após o timeout, quanto esperar um job que ignora o token antes de abandoná-lo |
+| `TimeoutGracePeriod` | `5s` | Após timeout ou cancelamento, quanto um job que ignora o token segura o worker |
+| `MaxAbandonedJobs` | `4` | Máximo de jobs rodando sem worker depois da folga; acima disso seguram o worker |
+| `ShutdownTimeout` | `Timeout.InfiniteTimeSpan` | Na parada, quanto esperar jobs que ignoram o token antes de devolvê-los à fila e encerrar |
 
 Configuração inválida lança `ArgumentException` ao iniciar o host.
 
@@ -239,7 +244,7 @@ Configuração inválida lança `ArgumentException` ao iniciar o host.
 
 Jobs finalizados, seu histórico e suas tentativas crescem sem limite se ninguém os apagar, por isso
 `FinishedJobRetention` **não tem padrão**: sem ela a aplicação não inicia. Cada nó varre a cada `RetentionSweepInterval`
-e remove de vez os jobs em `succeeded`, `failed` ou `deleted` cuja última transição é mais antiga que a retenção (depois
+e remove de vez os jobs em `succeeded`, `failed`, `deleted` ou `cancelled` cuja última transição é mais antiga que a retenção (depois
 disso o `GET` devolve 404 e não dá mais para fazer requeue). Jobs `scheduled`, `enqueued` e `processing` nunca são
 removidos. Um requeue reinicia a contagem. Para manter tudo (e cuidar da limpeza por conta própria), use
 `Timeout.InfiniteTimeSpan`.
@@ -260,7 +265,7 @@ builder.Services.AddBackgroundJobs(o =>
 
 ## 6. Ciclo de vida do job
 
-Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processing`, `succeeded`, `failed`, `deleted`.
+Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processing`, `succeeded`, `failed`, `deleted`, `cancelled`.
 
 ```
              RunAt futuro                    became_due
@@ -273,19 +278,21 @@ Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processi
                                                                                      ├─► succeeded
                                                          tentativas esgotadas ───────┴─► failed
 
- succeeded / failed / deleted ── requeued_by_user ──► enqueued   (tentativas zeradas, histórico mantido)
+ succeeded / failed / deleted / cancelled ── requeued_by_user ──► enqueued   (tentativas zeradas, histórico mantido)
  processing ── crash/lease expirado ──► enqueued (recovered_after_crash) ou failed se sem tentativas
- processing ── cancelado pela parada ──► enqueued (interrupted_by_shutdown), sempre
+ processing ── cancelado pela parada ──► enqueued (interrupted_by_shutdown), sempre, tentativa devolvida
+ scheduled / enqueued / processing ── cancelled_by_user ──► cancelled   (processing: quando o código do job para)
 ```
 
 | Operação | Estados de origem permitidos |
 |---|---|
 | Delete | `scheduled`, `enqueued` |
-| Requeue | `succeeded`, `failed`, `deleted` |
+| Requeue | `succeeded`, `failed`, `deleted`, `cancelled` |
+| Cancel | `scheduled`, `enqueued`, `processing` |
 
 Um job em `processing` **não pode ser deletado**. As transições usam concorrência otimista (`version`); operações concorrentes conflitantes resultam em `InvalidJobTransitionException`.
 
-Resultados de tentativa (`AttemptOutcome`): `succeeded`, `failed`, `interrupted` (processo morreu ou parou durante a execução — conta como tentativa).
+Resultados de tentativa (`AttemptOutcome`): `succeeded`, `failed`, `interrupted` (processo morreu durante a execução — conta como tentativa; ou parou — não conta), `cancelled`.
 
 Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 
@@ -321,7 +328,7 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
 `BackgroundJobs.Storage`:
 
 - **`IJobStore`** — persiste jobs. **Não decide regras**: quais estados podem sair para onde, com que motivo de histórico
-  e se zera tentativas vem pronto em `JobTransition` (`Promote`, `Claim`, `Succeed`, `Fail`, `Recover`, `Delete`, `Requeue`),
+  e se zera tentativas vem pronto em `JobTransition` (`Promote`, `Claim`, `Succeed`, `Fail`, `Recover`, `Interrupt`, `Cancel`, `Delete`, `Requeue`),
   junto com `NewJob.Creation`. O store só aplica a transição de forma atômica, seguindo a mecânica comum descrita no
   comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
   FIFO ao entrar em `enqueued`, grava o histórico.
@@ -347,6 +354,7 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 | `GET /api/jobs/{id}` | `200` job completo | `404` |
 | `DELETE /api/jobs/{id}` | `200 {"id":"...","state":"deleted"}` | `404`, `409` |
 | `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` |
+| `POST /api/jobs/{id}/cancel` | `202 {"jobId":"..."}` (um job em `processing` passa a `cancelled` quando seu código para) | `404`, `409` |
 
 - Erros sempre no formato `{"error":"mensagem"}`. Id que não é Guid → `404`.
 - `limit` padrão 1000; `nextCursor` só vem preenchido quando a página está cheia.
@@ -367,8 +375,8 @@ Coloque-as atrás de autenticação/rede interna conforme sua infraestrutura.
 Pacote `BackgroundJobs.Dashboard`. `app.MapBackgroundJobsDashboard(string prefix = "/jobs")` — UI HTML renderizada no servidor (sem JavaScript), com modo escuro.
 
 - `GET {prefix}/` — lista paginada (50 por página), filtro por estado, auto-refresh a cada 5 s (desligável com `?refresh=off`).
-- `GET {prefix}/{id}` — detalhes, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete quando a transição é válida.
-- `POST {prefix}/{id}/delete` e `POST {prefix}/{id}/requeue` — ações via formulário.
+- `GET {prefix}/{id}` — detalhes, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete/Cancel quando a transição é válida.
+- `POST {prefix}/{id}/delete`, `POST {prefix}/{id}/requeue` e `POST {prefix}/{id}/cancel` — ações via formulário.
 
 Segurança embutida: CSP restritiva, `nosniff`, `no-referrer`, `no-store` e rejeição (`403`) de POSTs cross-site via `Sec-Fetch-Site`. **Não há autenticação embutida** — recomendado:
 
@@ -442,7 +450,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 - **Múltiplos nós:** suportado. Cada processo deve ter `NodeId` **único** — na partida, um nó recupera imediatamente todos os jobs presos com o seu próprio `NodeId`. Dois processos com o mesmo id roubariam jobs um do outro.
 - **Lease e heartbeat:** cada job em execução tem um lease de `LeaseDuration`, renovado a cada `LeaseDuration / 3`. Se o nó morrer, outro nó recupera o job após o lease expirar; a tentativa vira `interrupted` e conta para `MaxAttempts`.
 - **Reinício com mesmo `NodeId`:** recupera os jobs desse nó na hora, sem esperar o lease.
-- **Parada graciosa:** ao parar, o servidor deixa de pegar novos jobs sinaliza `context.CancellationToken` e **espera os em execução terminarem, sem limite de tempo**; jobs que param pelo token voltam para a fila na hora (o HTTP continua aceitando enqueues durante o drain). Ajuste o timeout do host conforme sua plataforma:
+- **Parada graciosa:** ao parar, o servidor deixa de pegar novos jobs, sinaliza `context.CancellationToken` e **espera os em execução terminarem**, até `ShutdownTimeout` (sem limite por padrão); jobs que param pelo token, ou que passam do limite, voltam para a fila na hora sem gastar tentativa (o HTTP continua aceitando enqueues durante o drain). Ajuste o timeout do host conforme sua plataforma:
 
   ```csharp
   builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = Timeout.InfiniteTimeSpan);
@@ -454,11 +462,10 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 ## 13. Limitações e boas práticas
 
 - **Entrega at-least-once:** um job pode executar mais de uma vez (crash, ou banco indisponível por mais que `LeaseDuration` durante a execução). **Escreva jobs idempotentes.**
-- **Cancelamento cooperativo:** jobs que ignoram o token atrasam o shutdown e, ao estourar o timeout, são abandonados mas não interrompidos.
+- **Cancelamento cooperativo:** .NET não mata threads; um job que ignora o token continua rodando (sem worker, até `MaxAbandonedJobs`) até voltar, e atrasa o shutdown até `ShutdownTimeout`. Depois de um `ShutdownTimeout`, outro nó pode rodar o job enquanto este processo ainda encerra.
 - **Retry fixo**, sem backoff exponencial nativo (use `RetryJitter` para espalhar).
 - **Fila única**, sem prioridades nem filas nomeadas.
 - **Circuit breaker de job** é por processo, não compartilhado entre nós.
-- **Sem retenção** automática de jobs concluídos.
 - Mantenha os args pequenos (são `jsonb` e voltam em toda consulta de detalhe).
 
 ## Referências no código

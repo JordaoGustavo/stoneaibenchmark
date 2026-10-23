@@ -51,6 +51,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IJobSignals>(sp => sp.GetRequiredService<Signals>());
         services.AddSingleton<StoreCircuitBreaker>();
         services.AddSingleton<JobCircuitBreaker>();
+        services.AddSingleton<CancelRequests>();
         services.AddSingleton<JobExecutor>();
         services.AddSingleton<Dispatcher>();
         services.AddSingleton<Scheduler>();

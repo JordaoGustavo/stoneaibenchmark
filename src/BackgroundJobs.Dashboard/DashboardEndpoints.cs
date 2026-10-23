@@ -142,7 +142,7 @@ public static class DashboardEndpoints
 
             var now = time.GetUtcNow().UtcDateTime;
             var tz = Zone(http);
-            var terminal = job.State is JobState.Succeeded or JobState.Failed or JobState.Deleted;
+            var terminal = JobStateWire.Finished.Contains(job.State);
             var runs = Runs(job);
             var body = new StringBuilder();
             body.Append("<a class=\"back\" href=\"").Append(basePath).Append("\">&larr; All jobs</a>");
@@ -152,6 +152,8 @@ public static class DashboardEndpoints
                 body.Append(ActionForm($"{basePath}/{job.Id}/requeue", "Requeue", "btn"));
             if (job.State.CanDelete())
                 body.Append(ActionForm($"{basePath}/{job.Id}/delete", "Delete", "btn destructive"));
+            if (job.State.CanCancel())
+                body.Append(ActionForm($"{basePath}/{job.Id}/cancel", "Cancel", "btn destructive"));
             body.Append("</div></div>");
             if (!string.IsNullOrEmpty(msg)) body.Append(Alert(msg, info: true));
 
@@ -184,6 +186,9 @@ public static class DashboardEndpoints
 
         group.MapPost("/{id}/requeue", (HttpContext http, IJobClient client, string id, CancellationToken ct) =>
             RunAction(http, basePath, id, jobId => client.RequeueAsync(jobId, ct), "Job requeued."));
+
+        group.MapPost("/{id}/cancel", (HttpContext http, IJobClient client, string id, CancellationToken ct) =>
+            RunAction(http, basePath, id, jobId => client.CancelAsync(jobId, ct), "Cancel requested."));
 
         return group;
     }

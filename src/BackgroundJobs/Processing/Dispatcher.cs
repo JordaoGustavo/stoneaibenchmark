@@ -15,6 +15,7 @@ internal sealed class Dispatcher(
 {
     private readonly Dictionary<Guid, Task> _running = [];
     private readonly Lock _lock = new();
+    private int _abandoned;
 
     public IReadOnlyCollection<Guid> RunningIds()
     {
@@ -54,16 +55,36 @@ internal sealed class Dispatcher(
                 foreach (var job in jobs)
                 {
                     jobBreaker.OnClaimed(job.Name);
+                    var abandoned = false;
                     lock (_lock) _running[job.Id] = Task.Run(async () =>
                     {
-                        try { await executor.ExecuteAsync(job, ct); }
+                        try { await executor.ExecuteAsync(job, ct, Abandon); }
                         finally
                         {
-                            lock (_lock) _running.Remove(job.Id);
-                            slots.Release();
+                            lock (_lock)
+                            {
+                                _running.Remove(job.Id);
+                                if (abandoned) _abandoned--;
+                            }
+                            if (!abandoned) slots.Release();
                             signals.Dispatcher.Set();
                         }
                     }, CancellationToken.None);
+
+                    // Gives the job's worker to the next job while it keeps running (and stays in RunningIds, so its lease
+                    // is renewed). False when MaxAbandonedJobs are already running that way.
+                    bool Abandon()
+                    {
+                        lock (_lock)
+                        {
+                            if (abandoned || _abandoned >= o.MaxAbandonedJobs) return false;
+                            abandoned = true;
+                            _abandoned++;
+                        }
+                        slots.Release();
+                        signals.Dispatcher.Set();
+                        return true;
+                    }
                 }
             }
         }
