@@ -17,6 +17,7 @@ internal sealed class JobClient(
         if (o?.Condition is { } condition && !Enum.IsDefined(condition))
             throw new ArgumentException($"JobOptions.Condition is {condition}; use ContinuationCondition.OnSucceeded or OnFinished");
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
+        var backoff = BackoffSettings.Resolve(options.Value, o?.RetryBackoff, o?.RetryBackoffMultiplier, o?.MaxRetryDelay);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
         var registration = registry.Find(jobName);
@@ -30,6 +31,7 @@ internal sealed class JobClient(
         {
             ContinueAfter = o?.ContinueAfter,
             Condition = o?.Condition ?? ContinuationCondition.OnSucceeded,
+            RetryBackoffMultiplier = backoff.Multiplier, MaxRetryDelayMs = backoff.MaxDelayMs,
         };
         var stored = await store.InsertAsync(job, ct);
         // A continuation's creation state is decided by the store; waking both loops is harmless.

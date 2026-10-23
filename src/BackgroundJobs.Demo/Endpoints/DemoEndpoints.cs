@@ -12,7 +12,8 @@ public static class DemoEndpoints
 
     private sealed record CreateJobOptions(
         DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null, string? IdempotencyKey = null,
-        Guid? ContinueAfter = null, string? Condition = null);
+        Guid? ContinueAfter = null, string? Condition = null,
+        string? RetryBackoff = null, double? RetryBackoffMultiplier = null, int? MaxRetryDelayMs = null);
 
     /// Strict input: unknown fields, missing parameters, nulls and numbers-as-strings are rejected.
     private static readonly JsonSerializerOptions Strict = new(JsonSerializerDefaults.Web)
@@ -95,6 +96,16 @@ public static class DemoEndpoints
                 "on_finished" => ContinuationCondition.OnFinished,
                 _ => throw new BadRequest("options.condition must be on_succeeded or on_finished"),
             },
+            RetryBackoff = o.RetryBackoff switch
+            {
+                null => null,
+                "fixed" => RetryBackoff.Fixed,
+                "exponential" => RetryBackoff.Exponential,
+                _ => throw new BadRequest("options.retryBackoff must be fixed or exponential"),
+            },
+            // Multiplier and cap are checked by the library (ArgumentException → 400).
+            RetryBackoffMultiplier = o.RetryBackoffMultiplier,
+            MaxRetryDelay = o.MaxRetryDelayMs is { } maxMs ? TimeSpan.FromMilliseconds(maxMs) : null,
         };
     }
 

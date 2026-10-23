@@ -16,7 +16,7 @@ public sealed record JobOptions
     public int? MaxAttempts { get; init; }
 
     /// <summary>
-    /// Delay before each retry (fixed, not exponential).
+    /// Delay before each retry; with <see cref="RetryBackoff"/> Exponential, the delay before the first retry.
     /// </summary>
     public TimeSpan? RetryDelay { get; init; }
 
@@ -24,6 +24,25 @@ public sealed record JobOptions
     /// Random extra delay in [0, RetryJitter] added to each retry.
     /// </summary>
     public TimeSpan? RetryJitter { get; init; }
+
+    /// <summary>
+    /// How the delay grows between retries. Defaults to <see cref="BackgroundJobsOptions.DefaultRetryBackoff"/>
+    /// (<see cref="BackgroundJobs.RetryBackoff.Fixed"/> unless configured).
+    /// </summary>
+    public RetryBackoff? RetryBackoff { get; init; }
+
+    /// <summary>
+    /// With <see cref="BackgroundJobs.RetryBackoff.Exponential"/>, each retry waits this many times the previous one: from 1 to 100.
+    /// Ignored by <see cref="BackgroundJobs.RetryBackoff.Fixed"/>. Defaults to <see cref="BackgroundJobsOptions.DefaultRetryBackoffMultiplier"/>.
+    /// </summary>
+    public double? RetryBackoffMultiplier { get; init; }
+
+    /// <summary>
+    /// With <see cref="BackgroundJobs.RetryBackoff.Exponential"/>, the longest delay before a retry (jitter is added on top);
+    /// <see cref="Timeout.InfiniteTimeSpan"/> for no cap. Ignored by <see cref="BackgroundJobs.RetryBackoff.Fixed"/>.
+    /// Defaults to <see cref="BackgroundJobsOptions.DefaultMaxRetryDelay"/>.
+    /// </summary>
+    public TimeSpan? MaxRetryDelay { get; init; }
 
     /// <summary>
     /// The queue the job waits in; only servers consuming it (<see cref="BackgroundJobsOptions.Queues"/>) run it.
@@ -152,6 +171,21 @@ public sealed class BackgroundJobsOptions
     public TimeSpan DefaultRetryJitter { get; set; } = TimeSpan.Zero;
 
     /// <summary>
+    /// <see cref="JobOptions.RetryBackoff"/> when a job does not set it. Also used by jobs that recurring definitions enqueue.
+    /// </summary>
+    public RetryBackoff DefaultRetryBackoff { get; set; } = RetryBackoff.Fixed;
+
+    /// <summary>
+    /// <see cref="JobOptions.RetryBackoffMultiplier"/> when a job does not set it. From 1 to 100.
+    /// </summary>
+    public double DefaultRetryBackoffMultiplier { get; set; } = 2;
+
+    /// <summary>
+    /// <see cref="JobOptions.MaxRetryDelay"/> when a job does not set it. No cap (<see cref="Timeout.InfiniteTimeSpan"/>) by default.
+    /// </summary>
+    public TimeSpan DefaultMaxRetryDelay { get; set; } = Timeout.InfiniteTimeSpan;
+
+    /// <summary>
     /// Longest an attempt may run before its <see cref="JobContext.CancellationToken"/> fires and the attempt fails.
     /// <see cref="JobRegistrationOptions.Timeout"/> overrides it per job name. Infinite by default.
     /// </summary>
@@ -243,6 +277,12 @@ public sealed class BackgroundJobsOptions
         if (AbandonedJobAlertAfter < TimeSpan.Zero) throw Invalid(nameof(AbandonedJobAlertAfter), AbandonedJobAlertAfter, "zero or positive");
         if (ShutdownTimeout < TimeSpan.Zero && ShutdownTimeout != Timeout.InfiniteTimeSpan)
             throw Invalid(nameof(ShutdownTimeout), ShutdownTimeout, "zero or positive, or Timeout.InfiniteTimeSpan to wait for running jobs");
+        if (!Enum.IsDefined(DefaultRetryBackoff)) throw Invalid(nameof(DefaultRetryBackoff), DefaultRetryBackoff, "Fixed or Exponential");
+        if (!Processing.BackoffSettings.IsValidMultiplier(DefaultRetryBackoffMultiplier))
+            throw Invalid(nameof(DefaultRetryBackoffMultiplier), DefaultRetryBackoffMultiplier, $"a finite number from 1 to {Processing.BackoffSettings.MaxMultiplier}");
+        if (!Processing.BackoffSettings.IsValidMaxDelay(DefaultMaxRetryDelay))
+            throw Invalid(nameof(DefaultMaxRetryDelay), DefaultMaxRetryDelay,
+                $"from zero to {TimeSpan.FromMilliseconds(int.MaxValue)}, or Timeout.InfiniteTimeSpan for no cap");
         if (SchedulerMaxWait <= TimeSpan.Zero) throw Invalid(nameof(SchedulerMaxWait), SchedulerMaxWait, "positive");
     }
 

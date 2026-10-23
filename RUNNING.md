@@ -93,6 +93,7 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
   recuperado e executado de novo enquanto a execução original ainda roda (at-least-once); o resultado da
   execução original é descartado pela checagem de `version`/`locked_by`.
 - Se o resultado de uma tentativa não puder ser gravado (banco fora), o job só é recuperado quando o lease vence.
+- Backoff de retry: `RETRY_BACKOFF` (`exponential`; padrão fixo), `RETRY_BACKOFF_MULTIPLIER` (padrão 2) e `MAX_RETRY_DELAY_MS` (padrão sem teto) definem os padrões globais; por job, `POST /demo/jobs` aceita `options.retryBackoff` (`fixed`/`exponential`), `options.retryBackoffMultiplier` e `options.maxRetryDelayMs`.
 - `UNREGISTERED_JOBS` (nomes separados por vírgula, ex. `log-message`) deixa esses jobs fora do registro, simulando um nó de um deploy antigo: ele não faz claim deles.
 - Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo só usa em `fail-n-times` quando `FAIL_BREAKER_THRESHOLD` (e opcionalmente `FAIL_BREAKER_SECONDS`) está definido.
 - Observabilidade: `QUEUE_MONITOR_MS` e `STALLED_QUEUE_SECONDS` ajustam a amostragem da fila e o limite de fila parada; `GET /demo/telemetry` expõe spans e métricas capturados em memória; para exportar de verdade veja [Telemetria](#telemetria-otlp--grafana).

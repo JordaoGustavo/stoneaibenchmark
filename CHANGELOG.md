@@ -26,6 +26,12 @@ entre versões menores.
   estado finalizado precisa liberar as continuações (veja `IJobStore`).
 - `ClaimRequest.Names` (SPI de store): restringe o claim a esses nomes; `null` aceita qualquer nome. Stores de terceiros
   precisam aplicar o filtro (veja "Escrevendo um novo store" em `docs/INTEGRACAO.md`).
+- Backoff exponencial de retry, opt-in: `JobOptions.RetryBackoff` (`RetryBackoff.Fixed`/`Exponential`),
+  `RetryBackoffMultiplier` e `MaxRetryDelay`, com padrões globais em `BackgroundJobsOptions.DefaultRetryBackoff`,
+  `DefaultRetryBackoffMultiplier` (`2`) e `DefaultMaxRetryDelay` (sem teto). O padrão continua sendo atraso fixo. As
+  configurações são gravadas com o job (migration `012_retry_backoff.sql`). Jobs de recorrentes usam o padrão global.
+  SPI de store: `NewJob`/`ClaimedJob` ganham `RetryBackoffMultiplier` (`1` = fixo) e `MaxRetryDelayMs`, que stores de
+  terceiros precisam gravar no insert e devolver no claim.
 
 ### Corrigido
 

@@ -55,6 +55,7 @@ método `Schedule`: agendar é `EnqueueAsync` com `RunAt`.
 | `BackgroundJobsOptions` | `FinishedJobRetention` | nenhum: **obrigatória** (`Timeout.InfiniteTimeSpan` = guardar para sempre) |
 | | `WorkerCount` / `Queues` | `4` workers na fila `default` / vazio |
 | | `DefaultMaxAttempts`, `DefaultRetryDelay`, `DefaultRetryJitter` | `3`, `1 s`, `0` |
+| | `DefaultRetryBackoff`, `DefaultRetryBackoffMultiplier`, `DefaultMaxRetryDelay` | `Fixed`, `2`, infinito |
 | | `DefaultJobTimeout` | infinito |
 | | `LeaseDuration` | `30 s` |
 | | `ShutdownTimeout` | infinito |
@@ -117,8 +118,10 @@ campos, ou 6 com segundos primeiro. O fuso padrão é UTC.
    JSON cru).
 7. **Entrega at-least-once.** Crash, ou banco fora por mais que `LeaseDuration`, pode rodar o job de novo. Escreva jobs
    idempotentes.
-8. **Retry é de atraso fixo** (`RetryDelay` + jitter), sem backoff exponencial. `MaxAttempts` conta a primeira
-   execução.
+8. **Retry é de atraso fixo por padrão** (`RetryDelay` + jitter). Backoff exponencial é opt-in:
+   `RetryBackoff = RetryBackoff.Exponential` em `JobOptions` (ou `DefaultRetryBackoff` global), com
+   `RetryBackoffMultiplier` (padrão `2`) e `MaxRetryDelay` (padrão sem teto). Não há backoff por registro nem por
+   recorrente (estes usam o padrão global). `MaxAttempts` conta a primeira execução.
 9. **Job em `processing` não pode ser deletado** (`InvalidJobTransitionException`): use `CancelAsync`. `DeleteAsync`
    aceita só `scheduled`/`enqueued`/`awaiting`; `RequeueAsync`, só estados finalizados.
 10. **Fila sem consumidor:** um job numa fila que nenhum nó lista em `Queues` fica em `enqueued` para sempre (o health

@@ -180,6 +180,23 @@ public abstract class JobStoreContract : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Claim_returns_the_retry_backoff_the_job_was_inserted_with()
+    {
+        var plain = await Insert();
+        var backoff = await _store.InsertAsync(
+            new NewJob(Guid.CreateVersion7(), "job", "{}", 1, 3, 1000, 0, null, T0, JobQueues.Default, 0)
+            {
+                RetryBackoffMultiplier = 2.5, MaxRetryDelayMs = 60_000,
+            }, Ct);
+
+        var claimed = (await Claim(limit: 10, order: ClaimOrder.Fifo)).ToDictionary(c => c.Id);
+        Assert.Equal(1, claimed[plain].RetryBackoffMultiplier);
+        Assert.Null(claimed[plain].MaxRetryDelayMs);
+        Assert.Equal(2.5, claimed[backoff].RetryBackoffMultiplier);
+        Assert.Equal(60_000, claimed[backoff].MaxRetryDelayMs);
+    }
+
+    [Fact]
     public async Task Claim_by_priority_then_fifo()
     {
         var a = await Insert(priority: 0);

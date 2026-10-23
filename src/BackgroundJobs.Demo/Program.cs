@@ -50,6 +50,11 @@ var jobs = builder.Services.AddBackgroundJobs(
             o.Queues[parts[0]] = workers;
         }
         o.NodeId = Env("NODE_ID", o.NodeId);
+        // Global retry backoff defaults; unset keeps the library's (fixed delay).
+        if (Env("RETRY_BACKOFF", "") == "exponential") o.DefaultRetryBackoff = RetryBackoff.Exponential;
+        if (Env("RETRY_BACKOFF_MULTIPLIER", "") is { Length: > 0 } multiplier)
+            o.DefaultRetryBackoffMultiplier = double.Parse(multiplier, System.Globalization.CultureInfo.InvariantCulture);
+        if (int.TryParse(Env("MAX_RETRY_DELAY_MS", ""), out var maxRetryDelayMs)) o.DefaultMaxRetryDelay = TimeSpan.FromMilliseconds(maxRetryDelayMs);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
         // Required by the library. "unset" leaves it unset so tests can see startup refuse it.
         o.FinishedJobRetention = Env("RETENTION_SECONDS", "604800") switch
