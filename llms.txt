@@ -1,6 +1,6 @@
 # BackgroundJobs
 
-> Biblioteca .NET 10 de jobs em segundo plano persistidos em PostgreSQL: enfileiramento e agendamento, retry com atraso fixo, filas e prioridades, jobs recorrentes (cron), chaves de idempotência, timeout e cancelamento cooperativo, recuperação após crash por lease e vários nós no mesmo banco. Pacotes: BackgroundJobs (núcleo), BackgroundJobs.Postgres, BackgroundJobs.AspNetCore (API HTTP) e BackgroundJobs.Dashboard.
+> Biblioteca .NET 10 de jobs em segundo plano persistidos em PostgreSQL: enfileiramento e agendamento, retry com atraso fixo ou backoff exponencial, continuações (job que espera o pai finalizar), enfileiramento em lote e transacional (outbox no Postgres), filas e prioridades, jobs recorrentes (cron), chaves de idempotência, timeout e cancelamento cooperativo, recuperação após crash por lease e vários nós no mesmo banco. Pacotes: BackgroundJobs (núcleo), BackgroundJobs.Postgres, BackgroundJobs.AspNetCore (API HTTP) e BackgroundJobs.Dashboard.
 
 Pontos que mais causam erro: `FinishedJobRetention` é obrigatória; é preciso escolher um store (`.UsePostgres` ou `.UseInMemoryStorage`); os args são persistidos (para mudanças incompatíveis use `ArgsVersion` e `UpgradeArgs`); a entrega é at-least-once; nomes de job desconhecidos são aceitos no enqueue e falham na execução.
 
@@ -15,6 +15,9 @@ Pontos que mais causam erro: `FinishedJobRetention` é obrigatória; é preciso 
 
 - [Índice dos exemplos](samples/README.md): o que cada exemplo mostra e como rodá-lo
 - [WorkerExample](samples/WorkerExample/Program.cs): worker sem HTTP; registrar, enfileirar e agendar
+- [RetryBackoff](samples/RetryBackoff/Program.cs): retry com backoff exponencial e teto
+- [Continuations](samples/Continuations/Program.cs): cadeia de jobs com `ContinueAfter` e `Condition`
+- [Outbox](samples/Outbox/Program.cs): `EnqueueAsync`/`EnqueueManyAsync` com `NpgsqlTransaction` junto de uma tabela da app, e lote fora da transação
 
 ## Opcional
 
