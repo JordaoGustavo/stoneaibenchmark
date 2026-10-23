@@ -149,40 +149,80 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // the partial indexes' predicate, prepared statements included: bj_jobs_ready or bj_jobs_ready_fifo.
         var order = request.Order == ClaimOrder.Priority ? "priority DESC, enqueued_at, enqueue_seq" : "enqueued_at, enqueue_seq";
         await using var conn = await db.OpenConnectionAsync(ct);
-        // One statement = one transaction: claim, attempts++, open attempts, history. The lease is measured on the database's
-        // clock (see IJobStore.RecoverAsync).
-        var rows = await conn.QueryAsync<ClaimedJob>($"""
-            WITH locked AS (
-                SELECT id, priority, enqueued_at, enqueue_seq FROM bj_jobs
-                WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded))
+        var limits = request.ConcurrencyLimits;
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Limited names: one claim at a time per name across all nodes (sorted, so two claims never wait on each other),
+        // then their free slots, counted once the lock is held. Without limits the claim takes no lock.
+        var freeSlots = new Dictionary<string, int>();
+        if (limits.Count > 0)
+        {
+            var names = limits.Keys.Order(StringComparer.Ordinal).ToArray();
+            foreach (var name in names)
+                await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended('bj_concurrency:' || @name, 0))", new { name }, tx);
+            var running = (await conn.QueryAsync<(string Name, int Count)>(
+                "SELECT name, count(*)::int FROM bj_jobs WHERE state = 'processing' AND name = ANY(@names) GROUP BY name", new { names }, tx))
+                .ToDictionary(r => r.Name, r => r.Count);
+            foreach (var (name, limit) in limits) freeSlots[name] = limit - running.GetValueOrDefault(name);
+        }
+
+        // Each pass claims in order, keeping per limited name only as many jobs as it has free slots. A job is dropped only
+        // once its name used up its slots, so a short pass that filled no name found nothing more; one that did goes again
+        // with that name excluded, so jobs over a limit never make a claim stop short. Every further pass fills a name.
+        var claimed = new List<ClaimedJob>();
+        while (true)
+        {
+            var atLimit = freeSlots.Where(f => f.Value <= 0).Select(f => f.Key).ToArray();
+            var belowLimit = freeSlots.Where(f => f.Value > 0).ToArray();
+            var wanted = request.Limit - claimed.Count;
+            // One statement: claim, attempts++, open attempts, history. The lease is measured on the database's clock (see
+            // IJobStore.RecoverAsync).
+            var pass = (await conn.QueryAsync<ClaimedJob>($"""
+                WITH locked AS (
+                    SELECT id, name, priority, enqueued_at, enqueue_seq FROM bj_jobs
+                    WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded))
+                    ORDER BY {order}
+                    LIMIT @limit FOR UPDATE SKIP LOCKED
+                ), ranked AS (
+                    SELECT locked.*, row_number() OVER (PARTITION BY name ORDER BY {order}) AS nth FROM locked
+                ), kept AS (
+                    SELECT ranked.* FROM ranked LEFT JOIN unnest(@limitNames::text[], @limitFree::int[]) AS f(name, free) USING (name)
+                    WHERE f.free IS NULL OR nth <= f.free
+                ), next AS (
+                    SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY {order})] AS attempt_id FROM kept
+                ), claimed AS (
+                    UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
+                           updated_at = @now, locked_by = @nodeId, lease_expires_at = now() + @lease
+                    FROM next WHERE j.id = next.id
+                    RETURNING j.*, next.attempt_id
+                ), attempt AS (
+                    INSERT INTO bj_attempts (id, job_id, run, attempt, started_at)
+                    SELECT attempt_id, id, run, attempts, @now FROM claimed
+                ), history AS (
+                    INSERT INTO bj_history (job_id, state, at, reason)
+                    SELECT id, @to, @now, @reason FROM claimed
+                )
+                SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
+                       version, attempt_id, run, refunded_attempts
+                FROM claimed
                 ORDER BY {order}
-                LIMIT @limit FOR UPDATE SKIP LOCKED
-            ), next AS (
-                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY {order})] AS attempt_id FROM locked
-            ), claimed AS (
-                UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
-                       updated_at = @now, locked_by = @nodeId, lease_expires_at = now() + @lease
-                FROM next WHERE j.id = next.id
-                RETURNING j.*, next.attempt_id
-            ), attempt AS (
-                INSERT INTO bj_attempts (id, job_id, run, attempt, started_at)
-                SELECT attempt_id, id, run, attempts, @now FROM claimed
-            ), history AS (
-                INSERT INTO bj_history (job_id, state, at, reason)
-                SELECT id, @to, @now, @reason FROM claimed
-            )
-            SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
-                   version, attempt_id, run, refunded_attempts
-            FROM claimed
-            ORDER BY {order}
-            """,
-            new
-            {
-                queue = request.Queue, nodeId = request.NodeId, now = request.Now, lease = request.LeaseDuration, limit = request.Limit,
-                attemptIds = Enumerable.Range(0, request.Limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = request.ExcludedNames.ToArray(),
-                to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
-            });
-        return rows.AsList();
+                """,
+                new
+                {
+                    queue = request.Queue, nodeId = request.NodeId, now = request.Now, lease = request.LeaseDuration, limit = wanted,
+                    attemptIds = Enumerable.Range(0, wanted).Select(_ => Guid.CreateVersion7()).ToArray(),
+                    excluded = request.ExcludedNames.Concat(atLimit).ToArray(),
+                    limitNames = belowLimit.Select(f => f.Key).ToArray(), limitFree = belowLimit.Select(f => f.Value).ToArray(),
+                    to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
+                }, tx)).AsList();
+
+            claimed.AddRange(pass);
+            foreach (var job in pass)
+                if (freeSlots.TryGetValue(job.Name, out var slots)) freeSlots[job.Name] = slots - 1;
+            if (claimed.Count == request.Limit || !belowLimit.Any(f => freeSlots[f.Key] <= 0)) break;
+        }
+        await tx.CommitAsync(ct);
+        return claimed;
     }
 
     public async Task RegisterConsumerAsync(string nodeId, IReadOnlyCollection<string> queues, DateTime now, DateTime aliveUntil, CancellationToken ct)

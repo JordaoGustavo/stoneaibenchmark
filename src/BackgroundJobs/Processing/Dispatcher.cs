@@ -7,6 +7,7 @@ namespace BackgroundJobs.Processing;
 /// slots (no prefetch), so at most its worker count of functions run at once and a busy queue never takes another's slots.
 internal sealed class Dispatcher(
     IJobStore store,
+    JobRegistry registry,
     JobExecutor executor,
     AbandonedJobs abandonedJobs,
     JobCircuitBreaker jobBreaker,
@@ -80,7 +81,8 @@ internal sealed class Dispatcher(
                     // Taken before the claim, so the lease this node assumes never outlasts the one the store wrote.
                     var leaseFrom = time.GetTimestamp();
                     var claimed = await storeBreaker.TryAsync("claim", () => store.ClaimAsync(
-                        new ClaimRequest(queue, order, o.NodeId, time.UtcNow(), o.LeaseDuration, limit, excluded), CancellationToken.None),
+                        new ClaimRequest(queue, order, o.NodeId, time.UtcNow(), o.LeaseDuration, limit, excluded, registry.ConcurrencyLimits),
+                        CancellationToken.None),
                         CancellationToken.None) ?? [];
                     jobs.AddRange(claimed.Select(j => (j, leaseFrom)));
                     if (order == ClaimOrder.Priority) sinceFifo += claimed.Count;

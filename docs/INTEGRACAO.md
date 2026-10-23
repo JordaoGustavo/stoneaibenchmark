@@ -343,6 +343,13 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 - **Filas:** cada job pertence a uma fila (`JobOptions.Queue`, padrão `default`), fixa por toda a vida dele (retries e requeues voltam para a mesma). Cada fila consumida (`Queues`) tem **seus próprios workers**: uma fila lotada de jobs lentos não atrasa outra. Uma fila que nenhum processo consome guarda seus jobs em `enqueued`; diferentes processos podem consumir filas diferentes do mesmo banco.
 - **Ordem:** dentro da fila, maior `Priority` primeiro; empate em ordem FIFO de entrada em `enqueued` (retries, recuperações e requeues vão para o fim da sua prioridade). Com 1 worker na fila a ordem de execução é estrita. Para que um fluxo contínuo de prioridade alta não segure os de baixa para sempre, a cada `FifoClaimEvery` (padrão 10) jobs pegos de uma fila um é o mais antigo dela, qualquer que seja a prioridade; cargas que não podem esperar nada ficam melhor em filas próprias.
 - **Workers:** um job só é reivindicado quando a sua fila tem slot livre (sem prefetch), então nunca rodam mais que os workers da fila por processo. Vários processos podem compartilhar o banco (`FOR UPDATE SKIP LOCKED`).
+- **Limite de concorrência por tipo de job (opt-in):** `MaxConcurrency` limita quantos jobs daquele nome ficam em `processing` ao mesmo tempo **no cluster inteiro** (todos os nós e filas), não por processo. Os excedentes ficam em `enqueued` e os workers livres pegam os próximos jobs de outros tipos. Útil para proteger um recurso externo (API com rate limit, relatório pesado) ou para garantir uma execução por vez (`MaxConcurrency = 1`).
+
+  ```csharp
+  jobs.Register<ReportJob, ReportArgs>("report", o => o.MaxConcurrency = 2);
+  ```
+
+  Configure igual em todos os nós: um nó sem o limite pega esse tipo livremente. Jobs abandonados por timeout ainda contam até terminarem, e um job de um nó morto conta até a lease expirar e ele ser recuperado. No Postgres, claims de tipos limitados são serializados por um advisory lock por nome.
 - **Circuit breaker por tipo de job (opt-in):** após N falhas consecutivas, o tipo para de ser reivindicado por um tempo; depois deixa passar um único job de teste (half-open).
 
   ```csharp
@@ -381,6 +388,9 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   literal, senão o plano genérico de um statement preparado não usa índice parcial); num Redis, dois sorted sets por fila,
   um com score `(MaxPriority - priority) * 2^40 + sequência` (exato em `double` para as prioridades de `JobQueues`, que por
   isso são limitadas) e outro com score `sequência`.
+  `ClaimRequest.ConcurrencyLimits` traz o `MaxConcurrency` por nome: o claim pula jobs de um nome que já tem o limite em
+  `processing` e continua preenchendo com os seguintes, e claims concorrentes de nós diferentes juntos nunca passam do
+  limite (no Postgres, `pg_advisory_xact_lock` por nome antes de contar).
   `RegisterConsumerAsync` grava quais filas cada nó consome, com validade (num Redis, uma chave com TTL por nó e fila);
   `QueueStatsAsync` devolve uma entrada por fila com jobs prontos e se algum nó vivo a consome.
 - **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via

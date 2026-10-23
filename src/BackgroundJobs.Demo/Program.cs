@@ -69,7 +69,8 @@ var jobs = builder.Services.AddBackgroundJobs(
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     registry => registry
-        .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name)
+        .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name,
+            o => o.MaxConcurrency = Int("SUCCEED_AFTER_MAX_CONCURRENCY"))
         .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
         .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name)
         .Register<SleepJob, SleepArgs>(SleepJob.Name, o => o.Timeout = Milliseconds("SLEEP_TIMEOUT_MS"))
@@ -88,7 +89,9 @@ app.Run();
 
 static string Env(string name, string fallback) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } v ? v : fallback;
 
-static TimeSpan? Milliseconds(string name) => int.TryParse(Env(name, ""), out var ms) ? TimeSpan.FromMilliseconds(ms) : null;
+static TimeSpan? Milliseconds(string name) => Int(name) is { } ms ? TimeSpan.FromMilliseconds(ms) : null;
+
+static int? Int(string name) => int.TryParse(Env(name, ""), out var value) ? value : null;
 
 // Accepts either an Npgsql connection string or a postgres://user:pass@host:port/db URL.
 static string ToConnectionString(string value)

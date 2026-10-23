@@ -30,9 +30,11 @@ public enum ClaimOrder { Priority, Fifo }
 
 /// One claim: up to <see cref="Limit"/> enqueued jobs of <see cref="Queue"/> in <see cref="Order"/>, skipping
 /// <see cref="ExcludedNames"/>, locked to <see cref="NodeId"/> for <see cref="LeaseDuration"/> (see <see cref="IJobStore.RecoverAsync"/>
-/// for which clock measures it).
+/// for which clock measures it). <see cref="ConcurrencyLimits"/>: job name → most jobs of that name processing at once, on
+/// every node and in every queue; a name missing from it has no limit.
 public sealed record ClaimRequest(
-    string Queue, ClaimOrder Order, string NodeId, DateTime Now, TimeSpan LeaseDuration, int Limit, IReadOnlyCollection<string> ExcludedNames);
+    string Queue, ClaimOrder Order, string NodeId, DateTime Now, TimeSpan LeaseDuration, int Limit, IReadOnlyCollection<string> ExcludedNames,
+    IReadOnlyDictionary<string, int> ConcurrencyLimits);
 
 /// What <see cref="IJobStore.RenewLeasesAsync"/> did: the ids whose lease it extended (the others are no longer this
 /// node's), and those of them a user asked to cancel.
@@ -115,7 +117,10 @@ public interface IJobStore
 
     /// <see cref="JobTransition.Claim"/> for the jobs <paramref name="request"/> describes, in its order:
     /// <see cref="ClaimOrder.Priority"/> is priority descending, then FIFO (enqueued_at, sequence); <see cref="ClaimOrder.Fifo"/>
-    /// is FIFO alone. Each claim increments attempts, locks the job until the lease ends and opens an attempt; all in one
+    /// is FIFO alone. A job whose name already has its <see cref="ClaimRequest.ConcurrencyLimits"/> jobs processing (counting
+    /// those claimed by this call) is skipped and the claim keeps filling with the next ones; concurrent claims from any of
+    /// the nodes together never exceed a limit.
+    /// Each claim increments attempts, locks the job until the lease ends and opens an attempt; all in one
     /// atomic step. Returned in claim order. Keep the ready jobs of each queue indexed in both orders, so a claim reads the
     /// head of one queue (docs/INTEGRACAO.md, "Escrevendo um novo store").
     Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct);

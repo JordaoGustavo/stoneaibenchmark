@@ -86,15 +86,27 @@ internal sealed class InMemoryJobStore : IJobStore
 
     public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(ClaimRequest request, CancellationToken ct)
     {
-        var (queue, order, nodeId, now, leaseDuration, limit, excludedNames) = request;
+        var (queue, order, nodeId, now, leaseDuration, limit, excludedNames, limits) = request;
         lock (_lock)
         {
             var candidates = _jobs.Values
                 .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name));
-            var ready = (order == ClaimOrder.Priority ? candidates.OrderByDescending(r => r.Priority) : candidates.OrderBy(_ => 0))
-                .ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
-                .Take(limit)
-                .ToList();
+            var ordered = (order == ClaimOrder.Priority ? candidates.OrderByDescending(r => r.Priority) : candidates.OrderBy(_ => 0))
+                .ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq);
+            // Free slots per limited name, spent as jobs are taken; a job whose name has none left is skipped.
+            var freeSlots = limits.ToDictionary(
+                l => l.Key, l => l.Value - _jobs.Values.Count(r => r.Name == l.Key && r.State == JobState.Processing));
+            var ready = new List<Row>();
+            foreach (var r in ordered)
+            {
+                if (ready.Count == limit) break;
+                if (freeSlots.TryGetValue(r.Name, out var slots))
+                {
+                    if (slots <= 0) continue;
+                    freeSlots[r.Name] = slots - 1;
+                }
+                ready.Add(r);
+            }
             IReadOnlyList<ClaimedJob> claimed = ready.Select(r =>
             {
                 Apply(r, JobTransition.Claim, r.Version, null, now);

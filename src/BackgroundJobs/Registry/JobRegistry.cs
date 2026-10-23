@@ -16,6 +16,10 @@ public sealed class JobRegistrationOptions
     /// Bump it on a breaking change to the args type and register an <see cref="UpgradeArgs"/> step from the previous version.
     public int ArgsVersion { get; set; } = 1;
 
+    /// Most jobs of this name processing at once, across every node and queue; null: no limit. Jobs over it stay enqueued
+    /// while others are claimed past them. Set it alike on every node: a node without it claims this name freely.
+    public int? MaxConcurrency { get; set; }
+
     /// Overrides <see cref="BackgroundJobsOptions.DefaultJobTimeout"/> for this job name.
     public TimeSpan? Timeout { get; set; }
 
@@ -38,6 +42,7 @@ public sealed record CircuitBreakerOptions(int FailureThreshold, TimeSpan BreakD
 public sealed class JobRegistry
 {
     private readonly ConcurrentDictionary<string, JobRegistration> _jobs = new();
+    private volatile IReadOnlyDictionary<string, int> _concurrencyLimits = new Dictionary<string, int>();
 
     public JobRegistry Register<TJob, TArgs>(string name, Action<JobRegistrationOptions>? configure = null)
         where TJob : IJob<TArgs>
@@ -51,6 +56,7 @@ public sealed class JobRegistry
             throw new ArgumentException($"job '{name}': ArgsVersion is {options.ArgsVersion} but there is no args upgrade from version {string.Join(", ", missing)}");
         if (options.Upgrades.Keys.Any(v => v >= options.ArgsVersion))
             throw new ArgumentException($"job '{name}': args upgrades must start below ArgsVersion {options.ArgsVersion}");
+        if (options.MaxConcurrency < 1) throw new ArgumentException($"job '{name}': MaxConcurrency must be >= 1");
         if (options.Timeout is { } timeout && !BackgroundJobsOptions.IsValidTimeout(timeout))
             throw new ArgumentException($"job '{name}': Timeout must be positive or Timeout.InfiniteTimeSpan");
 
@@ -61,12 +67,18 @@ public sealed class JobRegistry
             await job.ExecuteAsync(typedArgs, context);
         });
         if (!_jobs.TryAdd(name, registration)) throw new ArgumentException($"job '{name}' is already registered");
+        if (options.MaxConcurrency is { } max)
+            lock (_jobs) _concurrencyLimits = new Dictionary<string, int>(_concurrencyLimits) { [name] = max };
         return this;
     }
 
     internal JobRegistration? Find(string name) => _jobs.GetValueOrDefault(name);
 
     internal IEnumerable<JobRegistration> All => _jobs.Values;
+
+    /// Job name → <see cref="JobRegistrationOptions.MaxConcurrency"/>, for the names that set one.
+    /// Rebuilt on registration, so claims read it without allocating.
+    internal IReadOnlyDictionary<string, int> ConcurrencyLimits => _concurrencyLimits;
 
     /// Registered job names with their argument types, ordered by name.
     public IReadOnlyList<(string Name, Type ArgsType)> Registrations =>
