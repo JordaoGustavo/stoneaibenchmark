@@ -159,6 +159,17 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.CompletedTask;
     }
 
+    public Task<int> PurgeFinishedAsync(DateTime finishedBefore, int limit, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            var doomed = _jobs.Values.Where(r => JobStateWire.Finished.Contains(r.State) && r.UpdatedAt < finishedBefore)
+                .OrderBy(r => r.UpdatedAt).Take(limit).Select(r => r.Id).ToList();
+            foreach (var id in doomed) _jobs.Remove(id);
+            return Task.FromResult(doomed.Count);
+        }
+    }
+
     /// The shared mechanics of IJobStore, guarded by source state and version. Callers hold the lock.
     private bool Apply(Row r, JobTransition t, int expectedVersion, DateTime? runAt, DateTime now)
     {

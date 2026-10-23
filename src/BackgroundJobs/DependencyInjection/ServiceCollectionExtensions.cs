@@ -36,7 +36,7 @@ public static class ServiceCollectionExtensions
     public static BackgroundJobsBuilder AddBackgroundJobs(
         this IServiceCollection services, Action<BackgroundJobsOptions>? configure = null, Action<JobRegistry>? registerJobs = null)
     {
-        services.AddOptions<BackgroundJobsOptions>().Configure(configure ?? (_ => { })).Validate(o => { o.Validate(); return true; });
+        services.AddOptions<BackgroundJobsOptions>().Configure(configure ?? (_ => { })).Validate(o => { o.Validate(); return true; }).ValidateOnStart();
 
         var registry = new JobRegistry();
         registerJobs?.Invoke(registry);
@@ -56,6 +56,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Scheduler>();
         services.AddSingleton<LeaseHeartbeat>();
         services.AddSingleton<QueueMonitor>();
+        services.AddSingleton<RetentionSweeper>();
         services.AddSingleton<JobsMetrics>();
         services.AddSingleton<IJobClient, JobClient>();
         services.AddSingleton<JobServer>();

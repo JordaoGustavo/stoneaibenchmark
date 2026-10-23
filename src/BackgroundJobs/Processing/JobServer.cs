@@ -13,6 +13,7 @@ internal sealed class JobServer(
     Scheduler scheduler,
     LeaseHeartbeat heartbeat,
     QueueMonitor queueMonitor,
+    RetentionSweeper retention,
     IJobStoreListener listener,
     StoreCircuitBreaker storeBreaker,
     IOptions<BackgroundJobsOptions> options,
@@ -49,7 +50,7 @@ internal sealed class JobServer(
         }
         catch (OperationCanceledException) { return; }
 
-        var loops = new[] { dispatcher.RunAsync(ct), scheduler.RunAsync(ct), heartbeat.RunAsync(ct), queueMonitor.RunAsync(ct), listener.RunAsync(ct) };
+        var loops = new[] { dispatcher.RunAsync(ct), scheduler.RunAsync(ct), heartbeat.RunAsync(ct), queueMonitor.RunAsync(ct), retention.RunAsync(ct), listener.RunAsync(ct) };
         _ready = true;
         logger.LogInformation("job server {NodeId} started with {Workers} workers", o.NodeId, o.WorkerCount);
         await Task.WhenAll(loops);

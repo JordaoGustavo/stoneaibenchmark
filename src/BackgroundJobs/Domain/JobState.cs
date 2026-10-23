@@ -11,6 +11,9 @@ public static class JobStateWire
     public static JobState ParseState(string s) => Enum.Parse<JobState>(s, ignoreCase: true);
     public static AttemptOutcome ParseOutcome(string s) => Enum.Parse<AttemptOutcome>(s, ignoreCase: true);
 
+    /// Succeeded, failed or deleted: nothing will happen to the job unless a user requeues it. Subject to retention.
+    public static readonly IReadOnlyList<JobState> Finished = [JobState.Succeeded, JobState.Failed, JobState.Deleted];
+
     /// Whether <see cref="IJobClient.DeleteAsync"/> accepts a job in this state.
     public static bool CanDelete(this JobState s) => JobTransition.Delete.Allows(s);
 

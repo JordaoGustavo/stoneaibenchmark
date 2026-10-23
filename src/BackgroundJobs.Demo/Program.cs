@@ -28,6 +28,14 @@ var jobs = builder.Services.AddBackgroundJobs(
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
         o.NodeId = Env("NODE_ID", Environment.MachineName);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
+        // Required by the library. "unset" leaves it unset so tests can see startup refuse it.
+        o.FinishedJobRetention = Env("RETENTION_SECONDS", "604800") switch
+        {
+            "unset" => null,
+            "forever" => Timeout.InfiniteTimeSpan,
+            var seconds => TimeSpan.FromSeconds(double.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture)),
+        };
+        o.RetentionSweepInterval = TimeSpan.FromMilliseconds(int.Parse(Env("RETENTION_SWEEP_MS", "60000")));
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     registry => registry

@@ -41,8 +41,25 @@ public sealed class BackgroundJobsOptions
     /// The health check reports a stalled queue when a job has been ready for longer than this.
     public TimeSpan StalledQueueThreshold { get; set; } = TimeSpan.FromSeconds(60);
 
+    /// Required: how long a finished job (succeeded, failed or deleted) is kept, with its history and attempts, after it
+    /// finished. Older ones are purged. <see cref="Timeout.InfiniteTimeSpan"/> keeps them forever (the tables then grow
+    /// without bound). There is no default: how much history to keep is a decision of the application.
+    public TimeSpan? FinishedJobRetention { get; set; }
+
+    /// How often finished jobs past their retention are purged.
+    public TimeSpan RetentionSweepInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// Max jobs purged per store call; a sweep repeats until fewer remain.
+    public int RetentionBatchSize { get; set; } = 1000;
+
     internal void Validate()
     {
+        if (FinishedJobRetention == null)
+            throw new ArgumentException("FinishedJobRetention must be set: how long finished jobs are kept (Timeout.InfiniteTimeSpan keeps them forever)");
+        if (FinishedJobRetention <= TimeSpan.Zero && FinishedJobRetention != Timeout.InfiniteTimeSpan)
+            throw new ArgumentException("FinishedJobRetention must be positive or Timeout.InfiniteTimeSpan");
+        if (RetentionSweepInterval <= TimeSpan.Zero) throw new ArgumentException("RetentionSweepInterval must be positive");
+        if (RetentionBatchSize < 1) throw new ArgumentException("RetentionBatchSize must be >= 1");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
         if (ClaimBatchSize < 1) throw new ArgumentException("ClaimBatchSize must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");

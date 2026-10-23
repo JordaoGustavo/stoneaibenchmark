@@ -56,7 +56,9 @@ using BackgroundJobs;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services
-    .AddBackgroundJobs(registerJobs: jobs => jobs.Register<SendEmailJob, SendEmailArgs>("send-email"))
+    .AddBackgroundJobs(
+        o => o.FinishedJobRetention = TimeSpan.FromDays(7), // obrigatório: veja "Retenção" na seção 5
+        jobs => jobs.Register<SendEmailJob, SendEmailArgs>("send-email"))
     .UsePostgres("Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs");
 
 var app = builder.Build();
@@ -210,6 +212,9 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 
 | Opção | Padrão | Descrição |
 |---|---|---|
+| `FinishedJobRetention` | **obrigatório** | Quanto tempo um job finalizado (`succeeded`, `failed`, `deleted`) é mantido, com histórico e tentativas. `Timeout.InfiniteTimeSpan` mantém para sempre |
+| `RetentionSweepInterval` | `1min` | Frequência da limpeza de jobs finalizados |
+| `RetentionBatchSize` | `1000` | Jobs removidos por comando de limpeza (a limpeza repete até esgotar) |
 | `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
 | `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
@@ -220,13 +225,23 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |
 
-Configuração inválida lança `ArgumentException` na resolução das opções.
+Configuração inválida lança `ArgumentException` ao iniciar o host.
+
+### Retenção
+
+Jobs finalizados, seu histórico e suas tentativas crescem sem limite se ninguém os apagar, por isso
+`FinishedJobRetention` **não tem padrão**: sem ela a aplicação não inicia. Cada nó varre a cada `RetentionSweepInterval`
+e remove de vez os jobs em `succeeded`, `failed` ou `deleted` cuja última transição é mais antiga que a retenção (depois
+disso o `GET` devolve 404 e não dá mais para fazer requeue). Jobs `scheduled`, `enqueued` e `processing` nunca são
+removidos. Um requeue reinicia a contagem. Para manter tudo (e cuidar da limpeza por conta própria), use
+`Timeout.InfiniteTimeSpan`.
 
 A biblioteca **não lê** `IConfiguration` sozinha; faça o bind você mesmo:
 
 ```csharp
 builder.Services.AddBackgroundJobs(o =>
 {
+    o.FinishedJobRetention = builder.Configuration.GetValue<TimeSpan?>("Jobs:Retention");
     o.WorkerCount = builder.Configuration.GetValue("Jobs:WorkerCount", 4);
     o.NodeId = Environment.GetEnvironmentVariable("NODE_ID") ?? Environment.MachineName;
 }, jobs => ...)
@@ -283,7 +298,7 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 ### Store em memória (testes)
 
 ```csharp
-builder.Services.AddBackgroundJobs(registerJobs: jobs => ...).UseInMemoryStorage();
+builder.Services.AddBackgroundJobs(o => o.FinishedJobRetention = TimeSpan.FromHours(1), jobs => ...).UseInMemoryStorage();
 ```
 
 Troca o Postgres por um store no próprio processo, com as mesmas transições, histórico, FIFO, retry, agendamento,

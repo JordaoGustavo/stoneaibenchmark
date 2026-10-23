@@ -92,4 +92,8 @@ public interface IJobStore
     /// Applies a user transition (<see cref="JobTransition.Delete"/>, <see cref="JobTransition.Requeue"/>).
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
     Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct);
+
+    /// Removes, with their history and attempts, up to <paramref name="limit"/> jobs in a
+    /// <see cref="JobStateWire.Finished"/> state last updated before <paramref name="finishedBefore"/>. Returns how many.
+    Task<int> PurgeFinishedAsync(DateTime finishedBefore, int limit, CancellationToken ct);
 }

@@ -229,6 +229,26 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return true;
     }
 
+    public async Task<int> PurgeFinishedAsync(DateTime finishedBefore, int limit, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        // States spelled out (= JobStateWire.Finished) so the bj_jobs_finished partial index applies.
+        // SKIP LOCKED: a job being requeued right now is left alone, and concurrent sweeps on other nodes split the work.
+        return await conn.ExecuteScalarAsync<int>("""
+            WITH doomed AS (
+                SELECT id FROM bj_jobs WHERE state IN ('succeeded', 'failed', 'deleted') AND updated_at < @finishedBefore
+                ORDER BY updated_at LIMIT @limit FOR UPDATE SKIP LOCKED
+            ), history AS (
+                DELETE FROM bj_history WHERE job_id IN (SELECT id FROM doomed)
+            ), attempts AS (
+                DELETE FROM bj_attempts WHERE job_id IN (SELECT id FROM doomed)
+            ), jobs AS (
+                DELETE FROM bj_jobs WHERE id IN (SELECT id FROM doomed) RETURNING 1
+            )
+            SELECT count(*)::int FROM jobs
+            """, new { finishedBefore, limit });
+    }
+
     private static string[] Wire(IEnumerable<JobState> states) => states.Select(s => s.ToWire()).ToArray();
 
     /// Delivered on commit; Postgres folds identical notifications within a transaction.

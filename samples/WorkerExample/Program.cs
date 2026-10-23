@@ -3,7 +3,8 @@ using BackgroundJobs;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services
-    .AddBackgroundJobs(registerJobs: jobs => jobs.Register<GreetJob, GreetArgs>("greet"))
+    // FinishedJobRetention is required: finished jobs, with their history and attempts, are purged after it.
+    .AddBackgroundJobs(o => o.FinishedJobRetention = TimeSpan.FromDays(7), registerJobs: jobs => jobs.Register<GreetJob, GreetArgs>("greet"))
     .UsePostgres(Environment.GetEnvironmentVariable("DATABASE_URL")
                  ?? "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs");
 
