@@ -4,4 +4,8 @@
     <ProjectReference Include="../BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
     <ProjectReference Include="../BackgroundJobs.Postgres/BackgroundJobs.Postgres.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+  </ItemGroup>
 </Project>

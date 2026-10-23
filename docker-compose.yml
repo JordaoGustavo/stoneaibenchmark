@@ -9,5 +9,16 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+  # OTLP collector + Prometheus + Tempo + Grafana in one container. Opt-in: docker compose --profile observability up -d
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    profiles: [observability]
+    ports:
+      - "3000:3000" # Grafana (admin/admin)
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    volumes:
+      - ./observability/grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/backgroundjobs.yaml:ro
+      - ./observability/grafana/backgroundjobs.json:/otel-lgtm/backgroundjobs-dashboard.json:ro
 volumes:
   pgdata:

@@ -4,6 +4,9 @@ using BackgroundJobs.Demo.Events;
 using BackgroundJobs.Demo.Jobs;
 using BackgroundJobs.Demo.Telemetry;
 using Npgsql;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,12 +19,23 @@ builder.Services.AddSingleton<EventLog>();
 // Created eagerly so it is listening before the first job runs.
 var telemetry = new TelemetryRecorder();
 builder.Services.AddSingleton(telemetry);
+// Real export on top of the in-memory recorder; the exporter reads the standard OTEL_EXPORTER_OTLP_* variables.
+if (Env("OTEL_EXPORTER_OTLP_ENDPOINT", "") is { Length: > 0 })
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(Env("OTEL_SERVICE_NAME", "backgroundjobs-demo")))
+        .WithTracing(t => t.AddSource(BackgroundJobsTelemetry.Name).AddOtlpExporter())
+        .WithMetrics(m => m.AddMeter(BackgroundJobsTelemetry.Name).AddOtlpExporter());
+}
 // Off unless set: lets tests see the per-type breaker in the health report.
 var failBreaker = int.TryParse(Env("FAIL_BREAKER_THRESHOLD", ""), out var threshold)
     ? new CircuitBreakerOptions(threshold, TimeSpan.FromSeconds(int.Parse(Env("FAIL_BREAKER_SECONDS", "30"))))
     : null;
 // Which "greet" code this process runs: 1 = before its args changed, 2 = today.
 var greetVersion = int.Parse(Env("GREET_ARGS_VERSION", "2"));
+// Lets tests run nodes whose clocks disagree. Registered before AddBackgroundJobs, which keeps it.
+if (int.TryParse(Env("CLOCK_OFFSET_MS", ""), out var clockOffset))
+    builder.Services.AddSingleton<TimeProvider>(new OffsetTimeProvider(TimeSpan.FromMilliseconds(clockOffset)));
 var jobs = builder.Services.AddBackgroundJobs(
     o =>
     {
@@ -90,6 +104,12 @@ static string ToConnectionString(string value)
         Password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : null,
         Database = uri.AbsolutePath.Trim('/'),
     }.ConnectionString;
+}
+
+/// The system clock shifted by a fixed offset; timers and timestamps are untouched.
+sealed class OffsetTimeProvider(TimeSpan offset) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => System.GetUtcNow() + offset;
 }
 
 static partial class Registrations

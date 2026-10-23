@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: BackgroundJobs
+    type: file
+    options:
+      path: /otel-lgtm/backgroundjobs-dashboard.json
