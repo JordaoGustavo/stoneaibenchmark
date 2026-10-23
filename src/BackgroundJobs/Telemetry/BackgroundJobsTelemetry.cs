@@ -32,9 +32,9 @@ internal sealed class JobsMetrics
             "s", "Age of the oldest job in enqueued (0 when empty)");
     }
 
-    public void AttemptFinished(string jobName, bool success, TimeSpan duration)
+    public void AttemptFinished(string jobName, AttemptOutcome outcome, TimeSpan duration)
     {
-        var tags = new TagList { { "job.name", jobName }, { "outcome", success ? "succeeded" : "failed" } };
+        var tags = new TagList { { "job.name", jobName }, { "outcome", outcome.ToWire() } };
         _duration.Record(duration.TotalSeconds, tags);
         _attempts.Add(1, tags);
     }

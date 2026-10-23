@@ -11,6 +11,7 @@ public static class Reasons
     public const string RetryScheduled = "retry_scheduled";
     public const string MaxAttemptsExhausted = "max_attempts_exhausted";
     public const string RecoveredAfterCrash = "recovered_after_crash";
+    public const string InterruptedByShutdown = "interrupted_by_shutdown";
     public const string DeletedByUser = "deleted_by_user";
     public const string RequeuedByUser = "requeued_by_user";
 }
@@ -39,6 +40,10 @@ public sealed record JobTransition(string Operation, IReadOnlyList<JobState> Fro
     public static JobTransition Recover(int attempts, int maxAttempts) => attempts >= maxAttempts
         ? new("recover", [JobState.Processing], JobState.Failed, Reasons.MaxAttemptsExhausted)
         : new("recover", [JobState.Processing], JobState.Enqueued, Reasons.RecoveredAfterCrash);
+
+    /// The job stopped because its server is stopping. Unlike a crash it is never the job's fault, so it is queued again
+    /// at once even with no attempts left: a deploy must not fail a job for good. The attempt is still recorded.
+    public static readonly JobTransition Interrupt = new("interrupt", [JobState.Processing], JobState.Enqueued, Reasons.InterruptedByShutdown);
 
     public static readonly JobTransition Delete =
         new("delete", [JobState.Scheduled, JobState.Enqueued], JobState.Deleted, Reasons.DeletedByUser);

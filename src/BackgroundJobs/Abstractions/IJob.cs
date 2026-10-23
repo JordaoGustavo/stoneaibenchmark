@@ -6,4 +6,6 @@ public interface IJob<in TArgs>
     Task ExecuteAsync(TArgs args, JobContext context);
 }
 
-public sealed record JobContext(Guid JobId, int Attempt);
+/// <param name="CancellationToken">Fires when the attempt times out or the server stops. Pass it on to the calls the job
+/// makes; a job that ignores it keeps its worker until it returns (on timeout, until the grace period ends).</param>
+public sealed record JobContext(Guid JobId, int Attempt, CancellationToken CancellationToken = default);

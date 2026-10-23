@@ -35,6 +35,14 @@ public sealed class BackgroundJobsOptions
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan DefaultRetryJitter { get; set; } = TimeSpan.Zero;
 
+    /// Longest an attempt may run before its <see cref="JobContext.CancellationToken"/> fires and the attempt fails.
+    /// <see cref="JobRegistrationOptions.Timeout"/> overrides it per job name. Infinite by default.
+    public TimeSpan DefaultJobTimeout { get; set; } = Timeout.InfiniteTimeSpan;
+
+    /// After a timeout, how long a job that ignores its token is waited for. Then the attempt is recorded as failed and its
+    /// worker freed, while the job's code may still be running in the background.
+    public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
+
     /// How often the ready queue is sampled for metrics and the health check.
     public TimeSpan QueueMonitorInterval { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -65,6 +73,11 @@ public sealed class BackgroundJobsOptions
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
         if (QueueMonitorInterval <= TimeSpan.Zero) throw new ArgumentException("QueueMonitorInterval must be positive");
         if (StalledQueueThreshold <= TimeSpan.Zero) throw new ArgumentException("StalledQueueThreshold must be positive");
+        if (!IsValidTimeout(DefaultJobTimeout))
+            throw new ArgumentException("DefaultJobTimeout must be positive or Timeout.InfiniteTimeSpan");
+        if (TimeoutGracePeriod < TimeSpan.Zero) throw new ArgumentException("TimeoutGracePeriod must not be negative");
         if (SchedulerMaxWait <= TimeSpan.Zero) throw new ArgumentException("SchedulerMaxWait must be positive");
     }
+
+    internal static bool IsValidTimeout(TimeSpan t) => t > TimeSpan.Zero || t == Timeout.InfiniteTimeSpan;
 }

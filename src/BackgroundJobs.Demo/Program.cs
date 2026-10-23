@@ -37,12 +37,15 @@ var jobs = builder.Services.AddBackgroundJobs(
         };
         o.RetentionSweepInterval = TimeSpan.FromMilliseconds(int.Parse(Env("RETENTION_SWEEP_MS", "60000")));
         o.RetentionBatchSize = int.Parse(Env("RETENTION_BATCH", "1000"));
+        o.DefaultJobTimeout = Milliseconds("JOB_TIMEOUT_MS") ?? Timeout.InfiniteTimeSpan;
+        o.TimeoutGracePeriod = Milliseconds("TIMEOUT_GRACE_MS") ?? o.TimeoutGracePeriod;
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
     registry => registry
         .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name)
         .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
         .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name)
+        .Register<SleepJob, SleepArgs>(SleepJob.Name, o => o.Timeout = Milliseconds("SLEEP_TIMEOUT_MS"))
         .RegisterGreet(greetVersion));
 if (Env("STORAGE", "postgres") == "memory") jobs.UseInMemoryStorage();
 else jobs.UsePostgres(ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs")));
@@ -54,6 +57,8 @@ app.MapDemoEndpoints();
 app.Run();
 
 static string Env(string name, string fallback) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } v ? v : fallback;
+
+static TimeSpan? Milliseconds(string name) => int.TryParse(Env(name, ""), out var ms) ? TimeSpan.FromMilliseconds(ms) : null;
 
 // Accepts either an Npgsql connection string or a postgres://user:pass@host:port/db URL.
 static string ToConnectionString(string value)

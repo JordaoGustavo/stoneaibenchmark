@@ -77,7 +77,7 @@ public interface IJobStore
     /// until <paramref name="leaseUntil"/> and opens an attempt; all in one atomic step. Returned in FIFO order.
     Task<IReadOnlyList<ClaimedJob>> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct);
 
-    /// Applies <paramref name="transition"/> (<see cref="JobTransition.Succeed"/> or <see cref="JobTransition.Fail"/>) if this
+    /// Applies <paramref name="transition"/> (<see cref="JobTransition.Succeed"/>, <see cref="JobTransition.Fail"/> or <see cref="JobTransition.Interrupt"/>) if this
     /// node still owns the job, and closes its attempt with <paramref name="outcome"/>. False when the job was taken away.
     Task<bool> FinishAsync(ClaimedJob job, string nodeId, JobTransition transition, AttemptOutcome outcome, string? error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct);
 

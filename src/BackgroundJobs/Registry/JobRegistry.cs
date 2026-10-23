@@ -16,6 +16,9 @@ public sealed class JobRegistrationOptions
     /// Bump it on a breaking change to the args type and register an <see cref="UpgradeArgs"/> step from the previous version.
     public int ArgsVersion { get; set; } = 1;
 
+    /// Overrides <see cref="BackgroundJobsOptions.DefaultJobTimeout"/> for this job name.
+    public TimeSpan? Timeout { get; set; }
+
     /// Rewrites args stored as <paramref name="fromVersion"/> into the shape of <paramref name="fromVersion"/> + 1.
     /// Applied in order when a job with older args runs; the stored args are left as they were.
     public JobRegistrationOptions UpgradeArgs(int fromVersion, Func<JsonObject, JsonObject> upgrade)
@@ -48,6 +51,8 @@ public sealed class JobRegistry
             throw new ArgumentException($"job '{name}': ArgsVersion is {options.ArgsVersion} but there is no args upgrade from version {string.Join(", ", missing)}");
         if (options.Upgrades.Keys.Any(v => v >= options.ArgsVersion))
             throw new ArgumentException($"job '{name}': args upgrades must start below ArgsVersion {options.ArgsVersion}");
+        if (options.Timeout is { } timeout && !BackgroundJobsOptions.IsValidTimeout(timeout))
+            throw new ArgumentException($"job '{name}': Timeout must be positive or Timeout.InfiniteTimeSpan");
 
         var registration = new JobRegistration(name, typeof(TArgs), options, async (services, args, context) =>
         {

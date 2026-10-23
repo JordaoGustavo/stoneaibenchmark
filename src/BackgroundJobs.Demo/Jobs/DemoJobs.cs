@@ -5,6 +5,7 @@ namespace BackgroundJobs.Demo.Jobs;
 public sealed record SucceedAfterArgs(int DelayMs);
 public sealed record FailNTimesArgs(int FailTimes);
 public sealed record LogMessageArgs(string Message);
+public sealed record SleepArgs(int DelayMs, bool IgnoreCancellation = false);
 
 public sealed class SucceedAfterJob(EventLog events) : IJob<SucceedAfterArgs>
 {
@@ -29,6 +30,28 @@ public sealed class FailNTimesJob(EventLog events) : IJob<FailNTimesArgs>
         var fail = context.Attempt <= args.FailTimes;
         events.Finished(context, ok: !fail);
         return fail ? throw new InvalidOperationException("demo failure") : Task.CompletedTask;
+    }
+}
+
+/// Waits, honouring its token unless told to ignore it. Records a message when the token stopped it.
+public sealed class SleepJob(EventLog events) : IJob<SleepArgs>
+{
+    public const string Name = "sleep";
+
+    public async Task ExecuteAsync(SleepArgs args, JobContext context)
+    {
+        events.Started(context);
+        if (args.IgnoreCancellation) await Task.Delay(args.DelayMs, CancellationToken.None);
+        else
+        {
+            try { await Task.Delay(args.DelayMs, context.CancellationToken); }
+            catch (OperationCanceledException)
+            {
+                events.Message(context, "cancelled");
+                throw;
+            }
+        }
+        events.Finished(context, ok: true);
     }
 }
 

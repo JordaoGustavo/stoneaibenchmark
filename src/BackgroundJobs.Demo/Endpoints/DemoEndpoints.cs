@@ -45,6 +45,7 @@ public static class DemoEndpoints
                     SucceedAfterJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<SucceedAfterArgs>(request.Params)), options, ct),
                     FailNTimesJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<FailNTimesArgs>(request.Params)), options, ct),
                     LogMessageJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<LogMessageArgs>(request.Params)), options, ct),
+                    SleepJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<SleepArgs>(request.Params)), options, ct),
                     // Whichever greet args this process registered (see GREET_ARGS_VERSION).
                     GreetJob.Name when registry.Registrations.Contains((GreetJob.Name, typeof(GreetV1Args))) =>
                         await jobs.EnqueueAsync(request.Job, Parse<GreetV1Args>(request.Params), options, ct),
@@ -83,6 +84,9 @@ public static class DemoEndpoints
 
     private static FailNTimesArgs Validate(FailNTimesArgs a) =>
         a.FailTimes is >= 0 and <= 10 ? a : throw new BadRequest("params.failTimes must be between 0 and 10");
+
+    private static SleepArgs Validate(SleepArgs a) =>
+        a.DelayMs is >= 0 and <= 60_000 ? a : throw new BadRequest("params.delayMs must be between 0 and 60000");
 
     private static LogMessageArgs Validate(LogMessageArgs a) =>
         a.Message.Length <= 200 ? a : throw new BadRequest("params.message must have at most 200 characters");

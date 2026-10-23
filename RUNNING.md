@@ -71,4 +71,6 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
 - Observabilidade: `QUEUE_MONITOR_MS` e `STALLED_QUEUE_SECONDS` ajustam a amostragem da fila e o limite de fila parada; `GET /demo/telemetry` expõe spans e métricas capturados em memória (substituto de um exporter OpenTelemetry).
 - Retenção: `RETENTION_SECONDS` (padrão 7 dias; `forever` mantém tudo) `RETENTION_SWEEP_MS` (padrão 60000) e `RETENTION_BATCH` (padrão 1000) controlam a limpeza de jobs finalizados.
 - `GET /api/jobs` aceita `?after=<id>&limit=<1..1000>` (padrão 1000) e devolve `nextCursor`; acima de 1000 jobs é preciso seguir o cursor.
-- A parada graciosa não tem limite de tempo; um `SIGTERM` com job longo espera o job terminar.
+- A parada graciosa não tem limite de tempo; um `SIGTERM` cancela o token dos jobs e espera os que o ignoram terminarem.
+- Timeout: `JOB_TIMEOUT_MS` (padrão global), `SLEEP_TIMEOUT_MS` (só o job `sleep`) e `TIMEOUT_GRACE_MS` (padrão 5000). O job `sleep`
+  (`{"delayMs":..., "ignoreCancellation": false}`) espera honrando o token, ou ignorando-o com `ignoreCancellation: true`.

@@ -94,14 +94,20 @@ Para um processo **sem HTTP** (Worker Service), veja `samples/WorkerExample/Prog
 ```csharp
 /// Throwing fails the attempt.
 public interface IJob<in TArgs> { Task ExecuteAsync(TArgs args, JobContext context); }
-public sealed record JobContext(Guid JobId, int Attempt);
+public sealed record JobContext(Guid JobId, int Attempt, CancellationToken CancellationToken = default);
 ```
 
 - **Lançar exceção = tentativa falhou.** A mensagem (ou o nome do tipo, se vazia) é registrada no histórico de tentativas.
 - **Argumentos** são serializados com `System.Text.Json` (`JsonSerializerDefaults.Web`: camelCase, case-insensitive) e guardados como `jsonb`. Use records simples e evite mudanças incompatíveis no formato enquanto houver jobs pendentes.
 - **Injeção de dependência:** cada execução abre um scope de DI novo e o job é criado com `ActivatorUtilities`, então **não precisa registrar o job no container** — apenas suas dependências. Serviços *scoped* (ex.: `DbContext`) funcionam.
 - `context.Attempt` começa em 1; útil para lógica de idempotência ou logs.
-- Não há `CancellationToken` em `ExecuteAsync` (ver [limitações](#13-limitações-e-boas-práticas)).
+- **`context.CancellationToken`** dispara quando a tentativa estoura o timeout ou o servidor está parando. Repasse-o para `HttpClient`, EF, `Task.Delay` etc. O cancelamento é cooperativo:
+  - **Timeout** (`DefaultJobTimeout` ou `JobRegistrationOptions.Timeout`): a tentativa falha com erro `timed out after N ms` e segue a política de retry. Se o job ignorar o token, depois de `TimeoutGracePeriod` a tentativa é registrada como falha (`... and did not stop within N ms`) e o worker é liberado; o código do job pode continuar rodando em background (sem limite de quantos), e um retry pode começar enquanto isso. Por isso jobs com timeout precisam ser idempotentes.
+  - **Parada do servidor:** se o job terminar com `OperationCanceledException`, a tentativa vira `interrupted` e o job volta para `enqueued` na hora (`interrupted_by_shutdown`), sem esperar o lease — mesmo sem tentativas restantes, para que um deploy nunca falhe um job de vez (o número da tentativa pode passar de `MaxAttempts`). Um job que ignora o token continua sendo esperado.
+
+  ```csharp
+  jobs.Register<ReportJob, ReportArgs>("report", o => o.Timeout = TimeSpan.FromMinutes(2));
+  ```
 
 ### Registro
 
@@ -224,6 +230,8 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `DefaultMaxAttempts` | `3` | Padrão de `JobOptions.MaxAttempts` |
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |
+| `DefaultJobTimeout` | `Timeout.InfiniteTimeSpan` | Tempo máximo de uma tentativa; `JobRegistrationOptions.Timeout` sobrescreve por tipo |
+| `TimeoutGracePeriod` | `5s` | Após o timeout, quanto esperar um job que ignora o token antes de abandoná-lo |
 
 Configuração inválida lança `ArgumentException` ao iniciar o host.
 
@@ -267,6 +275,7 @@ Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processi
 
  succeeded / failed / deleted ── requeued_by_user ──► enqueued   (tentativas zeradas, histórico mantido)
  processing ── crash/lease expirado ──► enqueued (recovered_after_crash) ou failed se sem tentativas
+ processing ── cancelado pela parada ──► enqueued (interrupted_by_shutdown), sempre
 ```
 
 | Operação | Estados de origem permitidos |
@@ -276,7 +285,7 @@ Estados (`JobState`, no JSON em minúsculas): `scheduled`, `enqueued`, `processi
 
 Um job em `processing` **não pode ser deletado**. As transições usam concorrência otimista (`version`); operações concorrentes conflitantes resultam em `InvalidJobTransitionException`.
 
-Resultados de tentativa (`AttemptOutcome`): `succeeded`, `failed`, `interrupted` (processo morreu durante a execução — conta como tentativa).
+Resultados de tentativa (`AttemptOutcome`): `succeeded`, `failed`, `interrupted` (processo morreu ou parou durante a execução — conta como tentativa).
 
 Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 
@@ -433,7 +442,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 - **Múltiplos nós:** suportado. Cada processo deve ter `NodeId` **único** — na partida, um nó recupera imediatamente todos os jobs presos com o seu próprio `NodeId`. Dois processos com o mesmo id roubariam jobs um do outro.
 - **Lease e heartbeat:** cada job em execução tem um lease de `LeaseDuration`, renovado a cada `LeaseDuration / 3`. Se o nó morrer, outro nó recupera o job após o lease expirar; a tentativa vira `interrupted` e conta para `MaxAttempts`.
 - **Reinício com mesmo `NodeId`:** recupera os jobs desse nó na hora, sem esperar o lease.
-- **Parada graciosa:** ao parar, o servidor deixa de pegar novos jobs e **espera os em execução terminarem, sem limite de tempo** (o HTTP continua aceitando enqueues durante o drain). Ajuste o timeout do host conforme sua plataforma:
+- **Parada graciosa:** ao parar, o servidor deixa de pegar novos jobs sinaliza `context.CancellationToken` e **espera os em execução terminarem, sem limite de tempo**; jobs que param pelo token voltam para a fila na hora (o HTTP continua aceitando enqueues durante o drain). Ajuste o timeout do host conforme sua plataforma:
 
   ```csharp
   builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = Timeout.InfiniteTimeSpan);
@@ -445,7 +454,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 ## 13. Limitações e boas práticas
 
 - **Entrega at-least-once:** um job pode executar mais de uma vez (crash, ou banco indisponível por mais que `LeaseDuration` durante a execução). **Escreva jobs idempotentes.**
-- **Sem cancelamento:** jobs não recebem `CancellationToken`; jobs longos atrasam o shutdown.
+- **Cancelamento cooperativo:** jobs que ignoram o token atrasam o shutdown e, ao estourar o timeout, são abandonados mas não interrompidos.
 - **Retry fixo**, sem backoff exponencial nativo (use `RetryJitter` para espalhar).
 - **Fila única**, sem prioridades nem filas nomeadas.
 - **Circuit breaker de job** é por processo, não compartilhado entre nós.

@@ -56,7 +56,7 @@ internal sealed class Dispatcher(
                     jobBreaker.OnClaimed(job.Name);
                     lock (_lock) _running[job.Id] = Task.Run(async () =>
                     {
-                        try { await executor.ExecuteAsync(job); }
+                        try { await executor.ExecuteAsync(job, ct); }
                         finally
                         {
                             lock (_lock) _running.Remove(job.Id);
