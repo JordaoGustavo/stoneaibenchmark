@@ -45,6 +45,10 @@ await jobs.EnqueueAsync("send-email", args, new JobOptions
 });
 ```
 
+Lote atômico: `jobs.EnqueueManyAsync(items.Select(i => new JobToEnqueue("send-email", args, options)))`. Outbox no Postgres:
+`jobs.EnqueueAsync(npgsqlTransaction, "send-email", args)` (ou `EnqueueManyAsync(tx, ...)`): o job só existe se a
+transação da aplicação fizer commit.
+
 `IJobClient` (singleton) também tem `GetAsync`, `ListAsync`, `DeleteAsync`, `RequeueAsync`, `CancelAsync`. Não existe
 método `Schedule`: agendar é `EnqueueAsync` com `RunAt`.
 
@@ -89,6 +93,8 @@ campos, ou 6 com segundos primeiro. O fuso padrão é UTC.
 - `new JobOptions { ContinueAfter = parentId, Condition = ContinuationCondition.OnFinished }`: o job fica em `awaiting`
   até o pai finalizar; então vai para `enqueued` ou, se a condição (padrão `OnSucceeded`) não foi atendida, `cancelled`.
   Pai inexistente: `JobNotFoundException`. Um pai por job; encadeie para sequências.
+- Continuações também funcionam no lote (`EnqueueManyAsync`, que falha inteiro se algum pai não existir) e na
+  transação (`EnqueueAsync(tx, ...)`): pai e filho podem ser criados na mesma transação, com chamadas sucessivas.
 
 ### Cancelamento e timeout
 
@@ -173,13 +179,13 @@ SDK fixado em `global.json` (`10.0.402`, `rollForward: latestFeature`). Versões
 ### Convenções
 
 - **Prefira cenários E2E** a testes unitários: um arquivo novo em `tests/BackgroundJobs.E2E/Scenarios`, numerado em
-  sequência (`S24_...`), dirigindo a demo pela HTTP. Se o comportamento precisar de algo novo na demo, exponha via
+  sequência (hoje o último é `S28_...`), dirigindo a demo pela HTTP. Se o comportamento precisar de algo novo na demo, exponha via
   variável de ambiente ou endpoint `/demo/*`. Cenários que não dependem de durabilidade rodam contra todos os stores.
 - **Mudou `IJobStore` ou o comportamento de um store?** Adicione o caso em `tests/BackgroundJobs.StoreContract`; ele roda
   contra `PostgresJobStore` e `InMemoryJobStore`, e os dois precisam passar.
 - **Regras de transição** só em `src/BackgroundJobs/Domain/Transitions.cs` (`JobTransition`). Stores só aplicam.
 - **Migrations SQL numeradas**: novo arquivo `src/BackgroundJobs.Postgres/Migrations/NNN_descricao.sql` com o próximo
-  número (hoje o último é `011`). São aplicadas em ordem de nome e registradas em `bj_migrations`: **nunca edite uma
+  número (hoje o último é `012`). São aplicadas em ordem de nome e registradas em `bj_migrations`: **nunca edite uma
   migration existente**. Comente o porquê de cada índice/coluna no próprio SQL.
 - **`TreatWarningsAsErrors`** está ligado para todos os projetos (`Directory.Build.props`), assim como `Nullable`.
 - **API pública**: os pacotes usam `Microsoft.CodeAnalysis.PublicApiAnalyzers`. Ao adicionar, mudar ou remover um membro

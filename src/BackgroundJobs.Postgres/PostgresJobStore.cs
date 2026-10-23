@@ -68,13 +68,22 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         }
     }
 
+    public async Task<IReadOnlyList<Guid>> InsertManyAsync(IReadOnlyList<NewJob> jobs, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var ids = await PostgresBatchInsert.InsertAsync(conn, tx, jobs, ct);
+        await tx.CommitAsync(ct);
+        return ids;
+    }
+
     private static Task<Guid?> FindKeyHolderAsync(NpgsqlConnection conn, string key, NpgsqlTransaction? tx = null) =>
         conn.QuerySingleOrDefaultAsync<Guid?>($"SELECT id FROM bj_jobs WHERE idempotency_key = @key AND {KeyHeld}", new { key }, tx);
 
     /// <summary>
     /// The predicate of the bj_jobs_idempotency_key partial index: the job holds its key.
     /// </summary>
-    private const string KeyHeld = "state IN ('awaiting', 'scheduled', 'enqueued', 'processing')";
+    internal const string KeyHeld = "state IN ('awaiting', 'scheduled', 'enqueued', 'processing')";
 
     /// <summary>
     /// False, inserting nothing, when an unfinished job holds job.IdempotencyKey.
@@ -545,7 +554,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     /// <summary>
     /// Delivered on commit; Postgres folds identical notifications within a transaction.
     /// </summary>
-    private static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, JobState entered) =>
+    internal static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, JobState entered) =>
         entered is JobState.Enqueued or JobState.Scheduled
             ? conn.ExecuteAsync("SELECT pg_notify(@channel, @payload)", new { channel = JobNotifications.Channel, payload = entered.ToWire() }, tx)
             : Task.CompletedTask;

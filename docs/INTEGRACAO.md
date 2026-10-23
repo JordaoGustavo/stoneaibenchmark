@@ -172,6 +172,7 @@ Os cenários `tests/BackgroundJobs.E2E/Scenarios/S14_ArgsVersioning.cs` exercita
 | Método | Descrição | Exceções |
 |---|---|---|
 | `EnqueueAsync<TArgs>(name, args, JobOptions? options = null, ct)` | Persiste e retorna o `Guid` (UUIDv7). Com `IdempotencyKey` já usada por um job não terminado, não cria nada e retorna o id dele | `ArgumentException` (nome vazio, opções inválidas) |
+| `EnqueueManyAsync(IEnumerable<JobToEnqueue> jobs, ct)` | Enfileira um lote de forma atômica (todos ou nenhum) e retorna os ids na ordem de entrada. Cada `JobToEnqueue(nome, args, opções)` tem suas próprias opções e chave de idempotência; uma chave repetida no lote devolve o id do primeiro job com ela | `ArgumentException` (com `jobs[i]`; nada é criado) |
 | `GetAsync(id, ct)` | Retorna o `Job` completo, com histórico e tentativas | `JobNotFoundException` |
 | `ListAsync(Guid? after = null, int limit = 100, bool descending = false, ct)` | Resumos em ordem de criação (mais novos primeiro com `descending: true`); paginação por cursor (`after` = último id visto). `limit` 1..1000 | `ArgumentException` |
 | `DeleteAsync(id, ct)` | Remove da fila (só `scheduled`/`enqueued`) | `JobNotFoundException`, `InvalidJobTransitionException` |
@@ -236,6 +237,31 @@ await client.EnqueueAsync("cleanup", new CleanupArgs(file),
 - Retenção: só jobs finalizados são purgados, e um pai finalizado já não tem continuações `awaiting`; por isso o id do
   pai em `ContinueAfter` pode apontar para um job que não existe mais.
 - O health check não conta jobs `awaiting` como fila parada: eles não estão prontos.
+
+### Lote e enfileiramento transacional (outbox)
+
+```csharp
+// Vários jobs numa só ida ao banco, atômico.
+var ids = await client.EnqueueManyAsync(users.Select(u =>
+    new JobToEnqueue("send-email", new SendEmailArgs(u.Email, "Oi"), new JobOptions { IdempotencyKey = $"welcome:{u.Id}" })));
+
+// Postgres: o job nasce junto com os dados da aplicação, na mesma transação (using BackgroundJobs; using Npgsql).
+await using var conn = await dataSource.OpenConnectionAsync(ct);
+await using var tx = await conn.BeginTransactionAsync(ct);
+await SaveOrderAsync(conn, tx, order, ct);
+await client.EnqueueAsync(tx, "send-receipt", new ReceiptArgs(order.Id), new JobOptions { IdempotencyKey = $"receipt:{order.Id}" }, ct);
+await tx.CommitAsync(ct); // sem commit, não há job
+```
+
+Com a transação (`PostgresJobClientExtensions`, também com `EnqueueManyAsync(tx, jobs)`), o job só existe se ela fizer
+commit; rollback não deixa nada e libera a chave. Os workers são acordados pelo `NOTIFY` que o Postgres entrega no commit.
+Use `READ COMMITTED` (padrão); funciona só com `UsePostgres`, no mesmo banco. Com EF Core, pegue a transação com
+`db.Database.GetDbTransaction()` como `NpgsqlTransaction`.
+
+Lote e transação aceitam as mesmas opções do `EnqueueAsync`, inclusive backoff e continuações. No lote, uma continuação
+cujo pai não existe faz o lote inteiro falhar (`JobNotFoundException`, nada é criado). Na transação, um filho pode
+continuar um pai criado antes nela (`var a = await client.EnqueueAsync(tx, ...); await client.EnqueueAsync(tx, ..., new
+JobOptions { ContinueAfter = a })`): os dois só existem no commit.
 
 ### Modelos retornados
 
@@ -423,6 +449,8 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
   FIFO ao entrar em `enqueued`, grava o histórico. `InsertAsync` deduplica por `NewJob.IdempotencyKey` (no máximo um job
   não terminado por chave, de forma atômica — no Postgres, um índice `UNIQUE` parcial) e retorna o id do job que ficou com a chave.
+  `InsertManyAsync` faz o mesmo para um lote, numa operação atômica, na ordem do lote (inclusive a sequência FIFO), e
+  devolve por job o id dele ou o do dono da chave (que pode ser um job anterior do mesmo lote).
   `ClaimAsync(ClaimRequest)` recebe **uma fila** e uma ordem: `Priority` (prioridade desc, entrada, sequência) ou `Fifo`
   (entrada, sequência). Mantenha os prontos de cada fila indexados nas duas ordens, para o claim ler só o início de uma
   fila: no Postgres são os índices parciais `bj_jobs_ready` e `bj_jobs_ready_fifo` (o claim escreve `state = 'enqueued'`

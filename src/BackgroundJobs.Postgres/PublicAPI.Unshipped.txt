@@ -1,1 +1,4 @@
 #nullable enable
+BackgroundJobs.PostgresJobClientExtensions
+static BackgroundJobs.PostgresJobClientExtensions.EnqueueAsync<TArgs>(this BackgroundJobs.IJobClient! client, Npgsql.NpgsqlTransaction! transaction, string! jobName, TArgs args, BackgroundJobs.JobOptions? options = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Guid>!
+static BackgroundJobs.PostgresJobClientExtensions.EnqueueManyAsync(this BackgroundJobs.IJobClient! client, Npgsql.NpgsqlTransaction! transaction, System.Collections.Generic.IEnumerable<BackgroundJobs.JobToEnqueue!>! jobs, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<System.Guid>!>!

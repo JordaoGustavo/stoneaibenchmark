@@ -24,6 +24,13 @@ entre versões menores.
   condição não foi atendida. `Job.ContinueAfter`/`Job.Condition`, campos `continueAfter`/`continuationCondition` na API
   HTTP e no dashboard. Migration `011_continuations`. SPI: `NewJob.ContinueAfter`/`Condition`, e toda transição para um
   estado finalizado precisa liberar as continuações (veja `IJobStore`).
+- Enfileiramento em lote: `IJobClient.EnqueueManyAsync(IEnumerable<JobToEnqueue>)`, atômico, com opções e
+  `IdempotencyKey` por job; no Postgres é um único `INSERT` a partir de arrays. Novo método `IJobStore.InsertManyAsync`
+  no SPI: stores de terceiros precisam implementá-lo.
+- Enfileiramento transacional (outbox) no Postgres: `PostgresJobClientExtensions.EnqueueAsync(tx, ...)` e
+  `EnqueueManyAsync(tx, ...)` gravam os jobs na `NpgsqlTransaction` da aplicação; eles só existem se ela fizer commit.
+  Lote e transação aceitam todas as opções de `JobOptions`, incluindo continuações (pai e filho podem nascer na mesma
+  transação) e backoff de retry.
 - `ClaimRequest.Names` (SPI de store): restringe o claim a esses nomes; `null` aceita qualquer nome. Stores de terceiros
   precisam aplicar o filtro (veja "Escrevendo um novo store" em `docs/INTEGRACAO.md`).
 - Backoff exponencial de retry, opt-in: `JobOptions.RetryBackoff` (`RetryBackoff.Fixed`/`Exponential`),

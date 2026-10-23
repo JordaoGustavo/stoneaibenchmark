@@ -15,4 +15,8 @@
     <AdditionalFiles Include="PublicAPI.Shipped.txt" />
     <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The transactional enqueue (PostgresJobClientExtensions) reuses the client's validation and id generation. -->
+    <InternalsVisibleTo Include="BackgroundJobs.Postgres" />
+  </ItemGroup>
 </Project>

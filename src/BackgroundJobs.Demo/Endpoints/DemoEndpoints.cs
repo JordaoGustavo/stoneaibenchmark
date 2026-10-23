@@ -3,12 +3,22 @@ using System.Text.Json.Serialization;
 using BackgroundJobs.Demo.Events;
 using BackgroundJobs.Demo.Jobs;
 using BackgroundJobs.Demo.Telemetry;
+using Npgsql;
 
 namespace BackgroundJobs.Demo.Endpoints;
+
+/// The demo's Postgres connection string, for its own tables; null on the in-memory store.
+public sealed record DemoDatabase(string? ConnectionString);
 
 public static class DemoEndpoints
 {
     private sealed record CreateJobRequest(string Job, JsonElement Params, CreateJobOptions? Options = null);
+
+    private sealed record CreateBatchRequest(List<CreateJobRequest> Jobs);
+
+    /// Chain: each job is enqueued on its own call on the transaction, continuing after the previous one (unless it names
+    /// its own continueAfter), so a parent and its continuation are created on the same transaction.
+    private sealed record CreateOrderRequest(string OrderId, List<CreateJobRequest> Jobs, bool Rollback = false, bool Chain = false);
 
     private sealed record CreateJobOptions(
         DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null, string? IdempotencyKey = null,
@@ -42,19 +52,8 @@ public static class DemoEndpoints
             {
                 var request = await JsonSerializer.DeserializeAsync<CreateJobRequest>(http.Body, Strict, ct)
                               ?? throw new BadRequest("body is required");
-                var options = ParseOptions(request.Options);
-                var id = request.Job switch
-                {
-                    SucceedAfterJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<SucceedAfterArgs>(request.Params)), options, ct),
-                    FailNTimesJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<FailNTimesArgs>(request.Params)), options, ct),
-                    LogMessageJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<LogMessageArgs>(request.Params)), options, ct),
-                    SleepJob.Name => await jobs.EnqueueAsync(request.Job, Validate(Parse<SleepArgs>(request.Params)), options, ct),
-                    // Whichever greet args this process registered (see GREET_ARGS_VERSION).
-                    GreetJob.Name when registry.Registrations.Contains((GreetJob.Name, typeof(GreetV1Args))) =>
-                        await jobs.EnqueueAsync(request.Job, Parse<GreetV1Args>(request.Params), options, ct),
-                    GreetJob.Name => await jobs.EnqueueAsync(request.Job, Parse<GreetArgs>(request.Params), options, ct),
-                    _ => throw new BadRequest($"unknown job '{request.Job}'"),
-                };
+                var job = ToJob(request, registry);
+                var id = await jobs.EnqueueAsync(job.JobName, job.Args, job.Options, ct);
                 return Results.Accepted(value: new { jobId = id.ToString() });
             }
             catch (JobNotFoundException e)
@@ -68,7 +67,92 @@ public static class DemoEndpoints
             }
         });
 
+        // Batch enqueue: all jobs or none.
+        app.MapPost("/demo/jobs/batch", async (HttpRequest http, IJobClient jobs, JobRegistry registry, CancellationToken ct) =>
+        {
+            try
+            {
+                var request = await JsonSerializer.DeserializeAsync<CreateBatchRequest>(http.Body, Strict, ct)
+                              ?? throw new BadRequest("body is required");
+                var ids = await jobs.EnqueueManyAsync(request.Jobs.Select(j => ToJob(j, registry)).ToList(), ct);
+                return Results.Accepted(value: new { jobIds = ids.Select(id => id.ToString()) });
+            }
+            catch (JobNotFoundException e)
+            {
+                return ManagementEndpoints.Error(400, e.Message);
+            }
+            catch (Exception e) when (e is JsonException or BadRequest or ArgumentException)
+            {
+                return ManagementEndpoints.Error(400, e.Message);
+            }
+        });
+
+        // Transactional enqueue (outbox): writes an order row and its jobs on one transaction, then commits it, or rolls it
+        // back when rollback is true. Postgres only.
+        app.MapPost("/demo/orders", async (HttpRequest http, IJobClient jobs, JobRegistry registry, DemoDatabase database, CancellationToken ct) =>
+        {
+            try
+            {
+                var request = await JsonSerializer.DeserializeAsync<CreateOrderRequest>(http.Body, Strict, ct)
+                              ?? throw new BadRequest("body is required");
+                if (database.ConnectionString == null) throw new BadRequest("orders need the postgres store");
+                var batch = request.Jobs.Select(j => ToJob(j, registry)).ToList();
+
+                await using var conn = new NpgsqlConnection(database.ConnectionString);
+                await conn.OpenAsync(ct);
+                await using (var create = new NpgsqlCommand("CREATE TABLE IF NOT EXISTS demo_orders (id text PRIMARY KEY)", conn))
+                    await create.ExecuteNonQueryAsync(ct);
+                await using var tx = await conn.BeginTransactionAsync(ct);
+                await using (var insert = new NpgsqlCommand("INSERT INTO demo_orders (id) VALUES (@id)", conn, tx))
+                {
+                    insert.Parameters.AddWithValue("id", request.OrderId);
+                    await insert.ExecuteNonQueryAsync(ct);
+                }
+                IReadOnlyList<Guid> ids;
+                if (request.Chain)
+                {
+                    var chained = new List<Guid>();
+                    foreach (var job in batch)
+                    {
+                        var options = job.Options ?? new JobOptions();
+                        if (chained.Count > 0 && options.ContinueAfter == null) options = options with { ContinueAfter = chained[^1] };
+                        chained.Add(await jobs.EnqueueAsync(tx, job.JobName, job.Args, options, ct));
+                    }
+                    ids = chained;
+                }
+                else ids = await jobs.EnqueueManyAsync(tx, batch, ct);
+                if (request.Rollback) await tx.RollbackAsync(ct);
+                else await tx.CommitAsync(ct);
+                return Results.Ok(new { jobIds = ids.Select(id => id.ToString()) });
+            }
+            catch (JobNotFoundException e)
+            {
+                return ManagementEndpoints.Error(400, e.Message);
+            }
+            catch (Exception e) when (e is JsonException or BadRequest or ArgumentException)
+            {
+                return ManagementEndpoints.Error(400, e.Message);
+            }
+        });
+
         return app;
+    }
+
+    private static JobToEnqueue ToJob(CreateJobRequest request, JobRegistry registry)
+    {
+        var options = ParseOptions(request.Options);
+        object args = request.Job switch
+        {
+            SucceedAfterJob.Name => Validate(Parse<SucceedAfterArgs>(request.Params)),
+            FailNTimesJob.Name => Validate(Parse<FailNTimesArgs>(request.Params)),
+            LogMessageJob.Name => Validate(Parse<LogMessageArgs>(request.Params)),
+            SleepJob.Name => Validate(Parse<SleepArgs>(request.Params)),
+            // Whichever greet args this process registered (see GREET_ARGS_VERSION).
+            GreetJob.Name when registry.Registrations.Contains((GreetJob.Name, typeof(GreetV1Args))) => Parse<GreetV1Args>(request.Params),
+            GreetJob.Name => Parse<GreetArgs>(request.Params),
+            _ => throw new BadRequest($"unknown job '{request.Job}'"),
+        };
+        return new JobToEnqueue(request.Job, args, options);
     }
 
     private static T Parse<T>(JsonElement json) =>

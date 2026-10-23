@@ -21,7 +21,12 @@ dotnet run --project src/BackgroundJobs.Demo
 | `FIFO_CLAIM_EVERY` | `10`; `off` = prioridade estrita                                          |
 | `RECURRING_HEARTBEAT_CRON` | vazio; ex. `*/30 * * * * *` declara o recorrente `heartbeat` (job `log-message`) |
 
-`POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro).
+`POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro), além de
+`options.continueAfter`/`options.condition` (`on_succeeded`/`on_finished`) e das opções de backoff (abaixo).
+`POST /demo/jobs/batch` (`{ "jobs": [ { "job", "params", "options" }, ... ] }`) enfileira um lote atômico com as mesmas
+opções. `POST /demo/orders` (`{ "orderId", "jobs", "rollback"?, "chain"? }`, só Postgres) grava uma linha em
+`demo_orders` e os jobs na mesma transação (commit, ou rollback com `rollback: true`); com `chain: true` cada job é
+enfileirado numa chamada própria como continuação do anterior.
 
 **Desvio da [spec](docs/SPEC.md):** o armazenamento é Postgres, então `DATA_DIR` não é usado; os dados ficam no volume `pgdata` do compose.
 Reiniciar com os mesmos dados = rodar a demo de novo apontando para o mesmo `DATABASE_URL`.

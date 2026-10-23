@@ -12,6 +12,14 @@ public interface IJobClient
     Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
+    /// Persists all <paramref name="jobs"/> atomically (all or none) and returns their ids in input order. Every job is
+    /// validated before anything is written. Each <see cref="JobOptions.IdempotencyKey"/> behaves as in
+    /// <see cref="EnqueueAsync{TArgs}"/>: a key held by an unfinished job, or by an earlier job of the same batch, creates
+    /// nothing and yields the holder's id. An empty batch writes nothing.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> EnqueueManyAsync(IEnumerable<JobToEnqueue> jobs, CancellationToken ct = default);
+
+    /// <summary>
     /// The job with its args, history and attempts.
     /// </summary>
     /// <exception cref="JobNotFoundException"/>

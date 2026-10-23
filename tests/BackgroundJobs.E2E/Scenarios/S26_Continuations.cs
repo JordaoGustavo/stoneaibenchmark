@@ -4,7 +4,7 @@ using BackgroundJobs.E2E.Infra;
 namespace BackgroundJobs.E2E.Scenarios;
 
 [Collection(E2ECollection.Name)]
-public sealed class S25_Continuations(PostgresFixture pg)
+public sealed class S26_Continuations(PostgresFixture pg)
 {
     [Theory]
     [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]

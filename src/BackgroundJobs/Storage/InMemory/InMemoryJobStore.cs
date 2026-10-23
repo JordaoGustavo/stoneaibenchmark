@@ -28,6 +28,34 @@ internal sealed class InMemoryJobStore : IJobStore
         lock (_lock) return Task.FromResult(InsertLocked(job));
     }
 
+    public Task<IReadOnlyList<Guid>> InsertManyAsync(IReadOnlyList<NewJob> jobs, CancellationToken ct)
+    {
+        // Under one lock the batch is all or nothing: InsertLocked throws only for a missing parent, which is checked for
+        // the whole batch first. A key taken by an earlier job of the batch is already in _keyHolders.
+        lock (_lock)
+        {
+            CheckParentsLocked(jobs);
+            return Task.FromResult<IReadOnlyList<Guid>>(jobs.Select(InsertLocked).ToList());
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="JobNotFoundException"/> if some continuation's parent would not exist when InsertLocked reaches
+    /// it: neither stored nor written by an earlier job of the batch (a job deduplicated by its key is not written).
+    /// Callers hold the lock.
+    /// </summary>
+    private void CheckParentsLocked(IReadOnlyList<NewJob> jobs)
+    {
+        var written = new HashSet<Guid>();
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var job in jobs)
+        {
+            if (job.ContinueAfter is { } parent && !_jobs.ContainsKey(parent) && !written.Contains(parent))
+                throw new JobNotFoundException(parent);
+            if (job.IdempotencyKey is not { } key || (!_keyHolders.ContainsKey(key) && keys.Add(key))) written.Add(job.Id);
+        }
+    }
+
     /// <summary>
     /// Callers hold the lock.
     /// </summary>

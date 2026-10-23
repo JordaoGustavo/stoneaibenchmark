@@ -42,6 +42,16 @@ public sealed class ApiClient(Uri baseAddress)
         return body!["jobId"]!.GetValue<string>();
     }
 
+    public Task<HttpResponseMessage> PostRawAsync(string path, object body) => _http.PostAsJsonAsync(path, body, Json);
+
+    /// The jobIds of a 2xx response from /demo/jobs/batch or /demo/orders.
+    public static async Task<List<string>> JobIdsAsync(HttpResponseMessage response)
+    {
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadFromJsonAsync<JsonObject>(Json);
+        return body!["jobIds"]!.AsArray().Select(id => id!.GetValue<string>()).ToList();
+    }
+
     public async Task<JobView> GetJobAsync(string id)
     {
         var res = await _http.GetAsync($"/api/jobs/{id}");

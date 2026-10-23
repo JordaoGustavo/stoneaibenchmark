@@ -8,6 +8,7 @@ BackgroundJobs.BackgroundJobsOptions.DefaultRetryBackoffMultiplier.set -> void
 BackgroundJobs.ContinuationCondition
 BackgroundJobs.ContinuationCondition.OnFinished = 1 -> BackgroundJobs.ContinuationCondition
 BackgroundJobs.ContinuationCondition.OnSucceeded = 0 -> BackgroundJobs.ContinuationCondition
+BackgroundJobs.IJobClient.EnqueueManyAsync(System.Collections.Generic.IEnumerable<BackgroundJobs.JobToEnqueue!>! jobs, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<System.Guid>!>!
 BackgroundJobs.Job.Condition.get -> BackgroundJobs.ContinuationCondition?
 BackgroundJobs.Job.Condition.init -> void
 BackgroundJobs.Job.ContinueAfter.get -> System.Guid?
@@ -23,6 +24,14 @@ BackgroundJobs.JobOptions.RetryBackoff.init -> void
 BackgroundJobs.JobOptions.RetryBackoffMultiplier.get -> double?
 BackgroundJobs.JobOptions.RetryBackoffMultiplier.init -> void
 BackgroundJobs.JobState.Awaiting = 7 -> BackgroundJobs.JobState
+BackgroundJobs.JobToEnqueue
+BackgroundJobs.JobToEnqueue.Args.get -> object?
+BackgroundJobs.JobToEnqueue.Args.init -> void
+BackgroundJobs.JobToEnqueue.JobName.get -> string!
+BackgroundJobs.JobToEnqueue.JobName.init -> void
+BackgroundJobs.JobToEnqueue.JobToEnqueue(string! JobName, object? Args, BackgroundJobs.JobOptions? Options = null) -> void
+BackgroundJobs.JobToEnqueue.Options.get -> BackgroundJobs.JobOptions?
+BackgroundJobs.JobToEnqueue.Options.init -> void
 BackgroundJobs.RetryBackoff
 BackgroundJobs.RetryBackoff.Exponential = 1 -> BackgroundJobs.RetryBackoff
 BackgroundJobs.RetryBackoff.Fixed = 0 -> BackgroundJobs.RetryBackoff
@@ -32,6 +41,7 @@ BackgroundJobs.Storage.ClaimedJob.MaxRetryDelayMs.get -> int?
 BackgroundJobs.Storage.ClaimedJob.MaxRetryDelayMs.init -> void
 BackgroundJobs.Storage.ClaimedJob.RetryBackoffMultiplier.get -> double
 BackgroundJobs.Storage.ClaimedJob.RetryBackoffMultiplier.init -> void
+BackgroundJobs.Storage.IJobStore.InsertManyAsync(System.Collections.Generic.IReadOnlyList<BackgroundJobs.Storage.NewJob!>! jobs, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<System.Guid>!>!
 BackgroundJobs.Storage.NewJob.Condition.get -> BackgroundJobs.ContinuationCondition
 BackgroundJobs.Storage.NewJob.Condition.init -> void
 BackgroundJobs.Storage.NewJob.ContinueAfter.get -> System.Guid?
