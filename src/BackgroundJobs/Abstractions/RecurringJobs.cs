@@ -60,6 +60,15 @@ public sealed record RecurringJob(
     DateTime CreatedAt,
     DateTime UpdatedAt);
 
+internal static class RecurringJobExtensions
+{
+    /// The job one occurrence of <paramref name="definition"/> enqueues.
+    public static Storage.NewJob NewJob(this RecurringJob definition, DateTime now) => new(
+        Guid.CreateVersion7(now), definition.JobName, definition.Args.GetRawText(), definition.ArgsVersion, definition.MaxAttempts,
+        (int)definition.RetryDelay.TotalMilliseconds, (int)definition.RetryJitter.TotalMilliseconds, null, now, definition.Queue,
+        definition.Priority);
+}
+
 public static partial class RecurringJobIds
 {
     /// 1 to 100 characters: letters, digits, '-', '_', '.' and ':', starting with a letter or digit.

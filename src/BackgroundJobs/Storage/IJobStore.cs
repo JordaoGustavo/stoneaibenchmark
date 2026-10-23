@@ -39,10 +39,16 @@ public sealed record RecurringDefinition(
     string Id, string JobName, string Cron, string TimeZone, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs,
     int RetryJitterMs, string Queue, int Priority, DateTime NextRunAt, DateTime Now);
 
-/// Creates <see cref="Job"/> for recurring definition <see cref="RecurringId"/>. A scheduled fire (<see cref="Occurrence"/> set)
-/// applies only while the definition's next_run_at still equals it, and moves next_run_at to <see cref="NextRunAt"/>; a
-/// manual trigger (null) leaves next_run_at alone. Either way it sets last_run_at = Job.Now and last_job_id = Job.Id.
-public sealed record RecurringFire(string RecurringId, DateTime? Occurrence, DateTime? NextRunAt, NewJob Job);
+/// Creates <see cref="Job"/> for <see cref="Definition"/>, built from the definition as it was read. Applies only while
+/// the stored definition was not upserted since (its updated_at still equals Definition.UpdatedAt), and, for a scheduled
+/// fire (<see cref="Occurrence"/> set), while its next_run_at still equals Occurrence; it then moves next_run_at to
+/// <see cref="NextRunAt"/>. A manual trigger (Occurrence null) leaves next_run_at alone. Either way it sets
+/// last_run_at = Job.Now and last_job_id = Job.Id.
+public sealed record RecurringFire(RecurringJob Definition, DateTime? Occurrence, DateTime? NextRunAt, NewJob Job);
+
+/// Fired: the job was created. Stale: the definition was upserted, or the occurrence fired by another node, since it was
+/// read; nothing was written. Gone: there is no such definition.
+public enum RecurringFireResult { Fired, Stale, Gone }
 
 /// Wakes this node's loops when another node changes the store (this node's own changes wake them already).
 /// Stores that only live in this process need none.
@@ -144,6 +150,7 @@ public interface IJobStore
     /// zone are unchanged. Returns the stored definition. Wakes the schedulers of every node.
     Task<RecurringJob> UpsertRecurringAsync(RecurringDefinition definition, CancellationToken ct);
 
+    /// Null when there is no such definition.
     Task<RecurringJob?> GetRecurringAsync(string id, CancellationToken ct);
 
     /// Ordered by id.
@@ -152,16 +159,16 @@ public interface IJobStore
     /// False when there was no such definition.
     Task<bool> RemoveRecurringAsync(string id, CancellationToken ct);
 
-    /// Up to <paramref name="limit"/> definitions whose next_run_at is at or before <paramref name="now"/>, earliest first.
-    Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, CancellationToken ct);
+    /// Up to <paramref name="limit"/> definitions whose next_run_at is at or before <paramref name="now"/>, earliest first,
+    /// skipping <paramref name="excludedIds"/> (definitions this node cannot schedule).
+    Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, IReadOnlyCollection<string> excludedIds, CancellationToken ct);
 
-    /// Earliest next_run_at among recurring definitions, or null when none.
-    Task<DateTime?> NextRecurringAtAsync(CancellationToken ct);
+    /// Earliest next_run_at among recurring definitions other than <paramref name="excludedIds"/>, or null when none.
+    Task<DateTime?> NextRecurringAtAsync(IReadOnlyCollection<string> excludedIds, CancellationToken ct);
 
     /// Applies <paramref name="fire"/> and inserts its job (as <see cref="InsertAsync"/>) in one atomic step, so that of
-    /// several nodes firing the same occurrence exactly one creates a job. False when the definition is gone or, for a
-    /// scheduled fire, another node fired that occurrence already; nothing is written then.
-    Task<bool> FireRecurringAsync(RecurringFire fire, CancellationToken ct);
+    /// several nodes firing the same occurrence exactly one creates a job.
+    Task<RecurringFireResult> FireRecurringAsync(RecurringFire fire, CancellationToken ct);
 
     /// Removes, with their history and attempts, up to <paramref name="limit"/> jobs in a
     /// <see cref="JobStateWire.Finished"/> state last updated before <paramref name="finishedBefore"/>. Returns how many.

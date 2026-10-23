@@ -12,8 +12,9 @@ internal sealed class Scheduler(
 {
     private const int RecurringBatch = 100;
 
-    /// Definitions already reported as unusable on this node, so a stuck one is logged once, not every poll.
-    private readonly HashSet<string> _reported = [];
+    /// Definitions this node cannot schedule (a time zone or cron it cannot read); neither changes while the process
+    /// runs, so they are left to other nodes and logged once.
+    private readonly HashSet<string> _unusable = [];
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -22,15 +23,13 @@ internal sealed class Scheduler(
         {
             var promoted = await storeBreaker.TryAsync("promote", () => store.PromoteDueAsync(time.UtcNow(), ct), ct);
             if (promoted > 0) signals.JobsReady();
-            // Null on a store failure; true when a due definition could not be fired (and stays due).
-            var stuck = await storeBreaker.TryAsync("fire-recurring", async () => Tuple.Create(await FireDueRecurringAsync(ct)), ct);
+            await storeBreaker.TryAsync("fire-recurring", () => FireDueRecurringAsync(ct), ct);
             // Boxed so a store failure (null) is distinguishable from "nothing scheduled".
             var next = await storeBreaker.TryAsync("next-run-at", async () =>
-                Tuple.Create(Earliest(await store.NextRunAtAsync(ct), await store.NextRecurringAtAsync(ct))), ct);
-            var wait = next is null || stuck is null ? o.PollInterval
+                Tuple.Create(Earliest(await store.NextRunAtAsync(ct), await store.NextRecurringAtAsync(_unusable, ct))), ct);
+            var wait = next is null ? o.PollInterval
                 : next.Item1 is { } at ? Min(at - time.UtcNow(), o.SchedulerMaxWait)
                 : o.SchedulerMaxWait;
-            if (stuck?.Item1 == true && wait < o.PollInterval) wait = o.PollInterval;
             if (wait <= TimeSpan.Zero) continue;
             try { await signals.Scheduler.WaitAsync(wait, time, ct); }
             catch (OperationCanceledException) { return; }
@@ -38,15 +37,13 @@ internal sealed class Scheduler(
     }
 
     /// Fires every due definition once, whatever number of its occurrences were missed, and moves it to its next
-    /// occurrence after now. Returns whether some definition could not be fired.
+    /// occurrence after now. A definition upserted meanwhile is read again on the next pass.
     private async Task<bool> FireDueRecurringAsync(CancellationToken ct)
     {
-        var stuck = false;
         while (true)
         {
             var now = time.UtcNow();
-            var due = await store.DueRecurringAsync(now, RecurringBatch, ct);
-            var fired = 0;
+            var due = await store.DueRecurringAsync(now, RecurringBatch, _unusable, ct);
             foreach (var definition in due)
             {
                 DateTime next;
@@ -57,18 +54,16 @@ internal sealed class Scheduler(
                 }
                 catch (Exception e) when (e is FormatException or TimeZoneNotFoundException or InvalidTimeZoneException)
                 {
-                    if (_reported.Add(definition.Id)) logger.LogError(e, "recurring job {Id} cannot be scheduled on this node", definition.Id);
-                    stuck = true;
+                    _unusable.Add(definition.Id);
+                    logger.LogError(e, "recurring job {Id} cannot be scheduled on this node", definition.Id);
                     continue;
                 }
-                var job = Occurrences.NewJob(definition, now);
-                if (await store.FireRecurringAsync(new RecurringFire(definition.Id, definition.NextRunAt, next, job), ct))
-                {
-                    fired++;
+                var job = definition.NewJob(now);
+                if (await store.FireRecurringAsync(new RecurringFire(definition, definition.NextRunAt, next, job), ct) == RecurringFireResult.Fired)
                     signals.Entered(job.Creation.To);
-                }
             }
-            if (due.Count < RecurringBatch || fired == 0) return stuck;
+            // Every row of a full batch was fired, found stale or excluded, so the next query moves past it.
+            if (due.Count < RecurringBatch) return true;
         }
     }
 

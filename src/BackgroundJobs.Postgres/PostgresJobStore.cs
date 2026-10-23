@@ -350,33 +350,40 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return await conn.ExecuteAsync("DELETE FROM bj_recurring WHERE id = @id", new { id }) > 0;
     }
 
-    public async Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<RecurringJob>> DueRecurringAsync(DateTime now, int limit, IReadOnlyCollection<string> excludedIds, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<RecurringRow>(
-            $"SELECT {RecurringColumns} FROM bj_recurring WHERE next_run_at <= @now ORDER BY next_run_at LIMIT @limit", new { now, limit });
+        var rows = await conn.QueryAsync<RecurringRow>($"""
+            SELECT {RecurringColumns} FROM bj_recurring WHERE next_run_at <= @now AND NOT (id = ANY(@excluded))
+            ORDER BY next_run_at LIMIT @limit
+            """, new { now, limit, excluded = excludedIds.ToArray() });
         return rows.Select(r => r.ToRecurringJob()).ToList();
     }
 
-    public async Task<DateTime?> NextRecurringAtAsync(CancellationToken ct)
+    public async Task<DateTime?> NextRecurringAtAsync(IReadOnlyCollection<string> excludedIds, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        return await conn.ExecuteScalarAsync<DateTime?>("SELECT min(next_run_at) FROM bj_recurring");
+        return await conn.ExecuteScalarAsync<DateTime?>(
+            "SELECT min(next_run_at) FROM bj_recurring WHERE NOT (id = ANY(@excluded))", new { excluded = excludedIds.ToArray() });
     }
 
-    public async Task<bool> FireRecurringAsync(RecurringFire fire, CancellationToken ct)
+    public async Task<RecurringFireResult> FireRecurringAsync(RecurringFire fire, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         // The row lock serializes nodes firing the same occurrence; the loser sees next_run_at moved and writes nothing.
         var updated = await conn.ExecuteAsync("""
             UPDATE bj_recurring SET next_run_at = COALESCE(@NextRunAt, next_run_at), last_run_at = @now, last_job_id = @jobId
-            WHERE id = @RecurringId AND (@Occurrence::timestamptz IS NULL OR next_run_at = @Occurrence::timestamptz)
-            """, new { fire.RecurringId, fire.Occurrence, fire.NextRunAt, now = fire.Job.Now, jobId = fire.Job.Id }, tx);
-        if (updated == 0) return false;
+            WHERE id = @id AND updated_at = @updatedAt
+              AND (@Occurrence::timestamptz IS NULL OR next_run_at = @Occurrence::timestamptz)
+            """, new { id = fire.Definition.Id, updatedAt = fire.Definition.UpdatedAt, fire.Occurrence, fire.NextRunAt, now = fire.Job.Now, jobId = fire.Job.Id }, tx);
+        if (updated == 0)
+            return await conn.ExecuteScalarAsync<bool>("SELECT EXISTS (SELECT 1 FROM bj_recurring WHERE id = @id)", new { id = fire.Definition.Id }, tx)
+                ? RecurringFireResult.Stale
+                : RecurringFireResult.Gone;
         await InsertJobAsync(conn, tx, fire.Job);
         await tx.CommitAsync(ct);
-        return true;
+        return RecurringFireResult.Fired;
     }
 
     private static string[] Wire(IEnumerable<JobState> states) => states.Select(s => s.ToWire()).ToArray();

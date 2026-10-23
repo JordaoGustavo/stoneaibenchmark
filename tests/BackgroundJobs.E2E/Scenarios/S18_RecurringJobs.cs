@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using BackgroundJobs.E2E.Infra;
+using Npgsql;
 
 namespace BackgroundJobs.E2E.Scenarios;
 
@@ -20,12 +21,14 @@ public sealed class S18_RecurringJobs(PostgresFixture pg)
 
         var put = await http.PutAsJsonAsync("/api/recurring/tick", new
         {
-            job = "log-message", cron = "* * * * * *", args = new { message = "tick" }, options = new { queue = "default", priority = 5 },
+            job = "log-message", cron = "* * * * * *", args = new { message = "tick" },
+            options = new { queue = "default", priority = 5, retryJitterMs = 250 },
         }, Json);
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
         var view = await put.Content.ReadFromJsonAsync<JsonObject>(Json);
         Assert.Equal("tick", (string?)view!["id"]);
         Assert.Equal("UTC", (string?)view["timeZone"]);
+        Assert.Equal(250, view["retryJitterMs"]!.GetValue<int>());
 
         var jobs = await WaitForJobsAsync(demo, "log-message", n => n >= 3, TimeSpan.FromSeconds(6));
         var job = await demo.Api.WaitForStateAsync(jobs[0], "succeeded");
@@ -101,6 +104,7 @@ public sealed class S18_RecurringJobs(PostgresFixture pg)
         await Rejected("never", new { job = "log-message", cron = "0 0 30 2 *", args = new { message = "x" } });
         await Rejected("bad-tz", new { job = "log-message", cron = "* * * * *", timeZone = "Mars/Olympus", args = new { message = "x" } });
         await Rejected("bad-queue", new { job = "log-message", cron = "* * * * *", args = new { message = "x" }, options = new { queue = "Bad Queue" } });
+        await Rejected("unknown-job", new { job = "no-such-job", cron = "* * * * *", args = new { } });
         await Rejected("bad%20id", new { job = "log-message", cron = "* * * * *", args = new { message = "x" } });
         Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsync("/api/recurring/missing/trigger", null)).StatusCode);
     }
@@ -130,6 +134,33 @@ public sealed class S18_RecurringJobs(PostgresFixture pg)
         var seconds = (DateTime.UtcNow - started).TotalSeconds;
         // One job per second, not one per node per second.
         Assert.InRange(created, 3, (int)Math.Ceiling(seconds) + 1);
+    }
+
+    [Fact]
+    public async Task Definitions_this_node_cannot_schedule_do_not_hold_up_the_others()
+    {
+        var db = await pg.CreateDatabaseAsync();
+        await using (var setup = await DemoProcess.StartAsync(db)) { }
+
+        // More unusable due definitions than one scheduler batch, all due before the good one.
+        await using (var conn = new NpgsqlConnection(db))
+        {
+            await conn.OpenAsync();
+            await using var cmd = new NpgsqlCommand("""
+                INSERT INTO bj_recurring (id, job_name, cron, time_zone, args, args_version, max_attempts, retry_delay_ms,
+                                          retry_jitter_ms, queue, priority, next_run_at, created_at, updated_at)
+                SELECT 'stuck-' || i, 'log-message', '* * * * *', 'Mars/Olympus', '{"message":"x"}', 1, 1, 0, 0, 'default', 0,
+                       now() - interval '1 hour', now(), now()
+                FROM generate_series(1, 150) i
+                """, conn);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await using var demo = await DemoProcess.StartAsync(db);
+        using var http = Http(demo);
+        await http.PutAsJsonAsync("/api/recurring/good", new { job = "succeed-after", cron = "* * * * * *", args = new { delayMs = 0 } }, Json);
+        await WaitForJobsAsync(demo, "succeed-after", n => n >= 2, TimeSpan.FromSeconds(6));
+        Assert.Empty(await JobIdsAsync(demo, "log-message"));
     }
 
     private static DateTime NextMondayNoonUtc(DateTime now)

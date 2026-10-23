@@ -13,30 +13,24 @@ internal sealed class RecurringJobClient(
         RecurringJobIds.Check(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(cron);
-        var o = options.Value;
         CronExpression expression;
         try { expression = CronExpression.Parse(cron); }
         catch (FormatException e) { throw new ArgumentException(e.Message, nameof(cron), e); }
         var timeZone = jobOptions?.TimeZone ?? TimeZoneInfo.Utc;
-        var maxAttempts = jobOptions?.MaxAttempts ?? o.DefaultMaxAttempts;
-        var retryDelay = jobOptions?.RetryDelay ?? o.DefaultRetryDelay;
-        var jitter = jobOptions?.RetryJitter ?? o.DefaultRetryJitter;
-        if (maxAttempts < 1) throw new ArgumentException("maxAttempts must be >= 1");
-        if (retryDelay < TimeSpan.Zero || retryDelay.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryDelay is out of range");
-        if (jitter < TimeSpan.Zero || jitter.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryJitter is out of range");
-        var queue = JobQueues.CheckName(jobOptions?.Queue ?? JobQueues.Default);
-        var priority = JobQueues.CheckPriority(jobOptions?.Priority ?? JobQueues.DefaultPriority);
+        var o = jobOptions;
+        var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
-        var registration = registry.Find(jobName);
-        registration?.CheckArgs(args);
+        // Unlike a one-off enqueue, a typo here would fail at every occurrence, so the name must be registered.
+        var registration = registry.Find(jobName) ?? throw new ArgumentException($"job '{jobName}' is not registered", nameof(jobName));
+        registration.CheckArgs(args);
 
         var now = time.UtcNow();
         var next = expression.GetNextOccurrence(now, timeZone)
                    ?? throw new ArgumentException($"cron '{cron}' never fires", nameof(cron));
         var stored = await store.UpsertRecurringAsync(new RecurringDefinition(
             id, jobName, expression.Expression, timeZone.Id, JsonSerializer.Serialize(args, JobJson.Options),
-            registration?.Options.ArgsVersion ?? 1, maxAttempts, (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds,
-            queue, priority, next, now), ct);
+            registration.Options.ArgsVersion, settings.MaxAttempts, settings.RetryDelayMs, settings.RetryJitterMs,
+            settings.Queue, settings.Priority, next, now), ct);
         signals.SchedulesChanged();
         return stored;
     }
@@ -53,18 +47,19 @@ internal sealed class RecurringJobClient(
 
     public async Task<Guid> TriggerAsync(string id, CancellationToken ct = default)
     {
-        var definition = await GetAsync(id, ct);
-        var job = Occurrences.NewJob(definition, time.UtcNow());
-        if (!await store.FireRecurringAsync(new RecurringFire(id, null, null, job), ct)) throw new RecurringJobNotFoundException(id);
-        signals.Entered(job.Creation.To);
-        return job.Id;
+        // Retried when an upsert lands between the read and the fire, so the job carries the definition as it is now.
+        while (true)
+        {
+            var definition = await GetAsync(id, ct);
+            var job = definition.NewJob(time.UtcNow());
+            switch (await store.FireRecurringAsync(new RecurringFire(definition, null, null, job), ct))
+            {
+                case RecurringFireResult.Fired:
+                    signals.Entered(job.Creation.To);
+                    return job.Id;
+                case RecurringFireResult.Gone:
+                    throw new RecurringJobNotFoundException(id);
+            }
+        }
     }
-}
-
-internal static class Occurrences
-{
-    /// The job one occurrence of <paramref name="definition"/> enqueues.
-    public static NewJob NewJob(RecurringJob definition, DateTime now) => new(
-        Guid.CreateVersion7(now), definition.JobName, definition.Args.GetRawText(), definition.ArgsVersion, definition.MaxAttempts,
-        (int)definition.RetryDelay.TotalMilliseconds, (int)definition.RetryJitter.TotalMilliseconds, null, now, definition.Queue, definition.Priority);
 }

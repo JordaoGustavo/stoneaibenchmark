@@ -12,15 +12,8 @@ internal sealed class JobClient(
     public async Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? jobOptions = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
-        var o = options.Value;
-        var maxAttempts = jobOptions?.MaxAttempts ?? o.DefaultMaxAttempts;
-        var retryDelay = jobOptions?.RetryDelay ?? o.DefaultRetryDelay;
-        var jitter = jobOptions?.RetryJitter ?? o.DefaultRetryJitter;
-        if (maxAttempts < 1) throw new ArgumentException("maxAttempts must be >= 1");
-        if (retryDelay < TimeSpan.Zero || retryDelay.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryDelay is out of range");
-        if (jitter < TimeSpan.Zero || jitter.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryJitter is out of range");
-        var queue = JobQueues.CheckName(jobOptions?.Queue ?? JobQueues.Default);
-        var priority = JobQueues.CheckPriority(jobOptions?.Priority ?? JobQueues.DefaultPriority);
+        var o = jobOptions;
+        var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
         var registration = registry.Find(jobName);
@@ -29,8 +22,8 @@ internal sealed class JobClient(
         var now = time.UtcNow();
         var id = Guid.CreateVersion7(now);
         var job = new NewJob(
-            id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, maxAttempts,
-            (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now, queue, priority);
+            id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
+            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority);
         await store.InsertAsync(job, ct);
         signals.Entered(job.Creation.To);
         return id;

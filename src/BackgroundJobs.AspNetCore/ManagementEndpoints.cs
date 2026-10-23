@@ -12,7 +12,7 @@ public static class ManagementEndpoints
 {
     private sealed record UpsertRecurringRequest(string Job, string Cron, JsonElement Args, string? TimeZone = null, RecurringRequestOptions? Options = null);
 
-    private sealed record RecurringRequestOptions(string? Queue = null, int? Priority = null, int? MaxAttempts = null, int? RetryDelayMs = null);
+    private sealed record RecurringRequestOptions(string? Queue = null, int? Priority = null, int? MaxAttempts = null, int? RetryDelayMs = null, int? RetryJitterMs = null);
 
     /// Maps /api/jobs (list, get, delete, requeue, cancel), /api/recurring (list, get, put, delete, trigger), /health and
     /// /health/details. Opt-in.
@@ -127,6 +127,7 @@ public static class ManagementEndpoints
                     Priority = o?.Priority,
                     MaxAttempts = o?.MaxAttempts,
                     RetryDelay = o?.RetryDelayMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+                    RetryJitter = o?.RetryJitterMs is { } jitterMs ? TimeSpan.FromMilliseconds(jitterMs) : null,
                 };
                 return Results.Ok(ToView(await client.UpsertAsync(id, request.Job, request.Cron, request.Args, options, ct)));
             }
@@ -166,6 +167,7 @@ public static class ManagementEndpoints
         priority = r.Priority,
         maxAttempts = r.MaxAttempts,
         retryDelayMs = (int)r.RetryDelay.TotalMilliseconds,
+        retryJitterMs = (int)r.RetryJitter.TotalMilliseconds,
         nextRunAt = r.NextRunAt,
         lastRunAt = r.LastRunAt,
         lastJobId = r.LastJobId?.ToString(),

@@ -232,7 +232,7 @@ ou em tempo de execução, via `IRecurringJobClient`:
 
 | Método | Efeito | Erros |
 |---|---|---|
-| `UpsertAsync<TArgs>(id, jobName, cron, args, RecurringJobOptions?, ct)` | Cria ou substitui. Mantém a próxima ocorrência se cron e fuso não mudaram | `ArgumentException` (id, cron, fuso/opções inválidos ou cron que nunca dispara) |
+| `UpsertAsync<TArgs>(id, jobName, cron, args, RecurringJobOptions?, ct)` | Cria ou substitui. Mantém a próxima ocorrência se cron e fuso não mudaram | `ArgumentException` (id, cron, fuso/opções inválidos, job não registrado ou cron que nunca dispara) |
 | `GetAsync(id)` / `ListAsync()` | `RecurringJob` (`NextRunAt`, `LastRunAt`, `LastJobId`, ...) | `RecurringJobNotFoundException` |
 | `RemoveAsync(id)` | Para as próximas ocorrências; jobs já criados ficam | `RecurringJobNotFoundException` |
 | `TriggerAsync(id)` | Enfileira um job agora, sem mexer na próxima ocorrência | `RecurringJobNotFoundException` |
@@ -244,7 +244,9 @@ ou em tempo de execução, via `IRecurringJobClient`:
   hora repetida, crons que rodam toda hora (`*/5 * * * *`) seguem nas duas passagens e os demais rodam só na primeira.
 - **Ocorrências perdidas** (nenhum servidor no ar): disparam **uma vez** quando um servidor volta, e a agenda segue a partir de agora.
 - **Sem sobreposição controlada:** cada ocorrência é um job independente; uma não espera a anterior terminar.
-- **Vários nós:** cada ocorrência gera exatamente um job (o disparo e o avanço de `next_run_at` são atômicos).
+- **Vários nós:** cada ocorrência gera exatamente um job (o disparo e o avanço de `next_run_at` são atômicos), sempre com os args e opções vigentes: um disparo que cruza com um upsert é refeito com a definição nova.
+- **Job registrado:** ao contrário de `EnqueueAsync`, o nome do job precisa estar registrado no processo que faz o upsert.
+- Uma definição que um nó não consegue agendar (fuso desconhecido nele) é registrada em log uma vez e deixada para os outros nós, sem atrasar as demais.
 - Ids: 1–100 caracteres `A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `:`. Remover `AddRecurringJob` do código não apaga a definição — use `RemoveAsync`.
 
 ## 5. Configuração
@@ -405,12 +407,12 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 
 | `GET /api/recurring` | `200 {"items":[recorrente]}` | |
 | `GET /api/recurring/{id}` | `200` recorrente | `404` |
-| `PUT /api/recurring/{id}` | `200` recorrente. Corpo: `{"job","cron","args":{...},"timeZone"?,"options"?:{"queue","priority","maxAttempts","retryDelayMs"}}` | `400` |
+| `PUT /api/recurring/{id}` | `200` recorrente. Corpo: `{"job","cron","args":{...},"timeZone"?,"options"?:{"queue","priority","maxAttempts","retryDelayMs","retryJitterMs"}}` | `400` |
 | `DELETE /api/recurring/{id}` | `200 {"id":"..."}` | `404` |
 | `POST /api/recurring/{id}/trigger` | `202 {"jobId":"..."}` | `404` |
 
 - Erros sempre no formato `{"error":"mensagem"}`. Id que não é Guid → `404`.
-- Recorrente: `id, job, cron, timeZone, args, queue, priority, maxAttempts, retryDelayMs, nextRunAt, lastRunAt, lastJobId, createdAt, updatedAt`.
+- Recorrente: `id, job, cron, timeZone, args, queue, priority, maxAttempts, retryDelayMs, retryJitterMs, nextRunAt, lastRunAt, lastJobId, createdAt, updatedAt`.
 - `limit` padrão 1000; `nextCursor` só vem preenchido quando a página está cheia.
 - Job completo (ordem das chaves): `id, name, args, state, attempts, maxAttempts, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state,at,reason}], attemptHistory[{attempt,startedAt,finishedAt,outcome,error}]`. Datas ISO-8601 UTC com `Z`; `outcome` é `null` enquanto a tentativa roda.
 
