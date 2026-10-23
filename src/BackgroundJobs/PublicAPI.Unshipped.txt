@@ -1,3 +1,13 @@
 #nullable enable
 BackgroundJobs.Storage.ClaimRequest.Names.get -> System.Collections.Generic.IReadOnlyCollection<string!>?
 BackgroundJobs.Storage.ClaimRequest.Names.init -> void
+BackgroundJobs.IJobClient.EnqueueManyAsync(System.Collections.Generic.IEnumerable<BackgroundJobs.JobToEnqueue!>! jobs, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<System.Guid>!>!
+BackgroundJobs.JobToEnqueue
+BackgroundJobs.JobToEnqueue.Args.get -> object?
+BackgroundJobs.JobToEnqueue.Args.init -> void
+BackgroundJobs.JobToEnqueue.JobName.get -> string!
+BackgroundJobs.JobToEnqueue.JobName.init -> void
+BackgroundJobs.JobToEnqueue.JobToEnqueue(string! JobName, object? Args, BackgroundJobs.JobOptions? Options = null) -> void
+BackgroundJobs.JobToEnqueue.Options.get -> BackgroundJobs.JobOptions?
+BackgroundJobs.JobToEnqueue.Options.init -> void
+BackgroundJobs.Storage.IJobStore.InsertManyAsync(System.Collections.Generic.IReadOnlyList<BackgroundJobs.Storage.NewJob!>! jobs, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<System.Guid>!>!

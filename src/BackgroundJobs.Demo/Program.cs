@@ -83,8 +83,12 @@ var jobs = builder.Services.AddBackgroundJobs(
 // Declared in code, upserted at every start.
 if (Env("RECURRING_HEARTBEAT_CRON", "") is { Length: > 0 } heartbeatCron)
     jobs.AddRecurringJob("heartbeat", LogMessageJob.Name, heartbeatCron, new LogMessageArgs("heartbeat"));
-if (Env("STORAGE", "postgres") == "memory") jobs.UseInMemoryStorage();
-else jobs.UsePostgres(ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs")));
+var connectionString = Env("STORAGE", "postgres") == "memory"
+    ? null
+    : ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs"));
+if (connectionString == null) jobs.UseInMemoryStorage();
+else jobs.UsePostgres(connectionString);
+builder.Services.AddSingleton(new DemoDatabase(connectionString));
 
 var app = builder.Build();
 app.MapBackgroundJobsApi();

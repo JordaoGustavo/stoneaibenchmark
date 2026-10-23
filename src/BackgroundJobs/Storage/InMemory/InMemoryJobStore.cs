@@ -28,6 +28,13 @@ internal sealed class InMemoryJobStore : IJobStore
         lock (_lock) return Task.FromResult(InsertLocked(job));
     }
 
+    public Task<IReadOnlyList<Guid>> InsertManyAsync(IReadOnlyList<NewJob> jobs, CancellationToken ct)
+    {
+        // InsertLocked never throws, so under one lock the batch is all or nothing; a key taken by an earlier job of the
+        // batch is already in _keyHolders.
+        lock (_lock) return Task.FromResult<IReadOnlyList<Guid>>(jobs.Select(InsertLocked).ToList());
+    }
+
     /// <summary>
     /// Callers hold the lock.
     /// </summary>

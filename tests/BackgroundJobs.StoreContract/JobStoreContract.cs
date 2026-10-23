@@ -127,6 +127,65 @@ public abstract class JobStoreContract : IAsyncLifetime
         Assert.Equal(JobState.Deleted, (await Get(old)).State);
     }
 
+    // ---- batch insert ----
+
+    [Fact]
+    public async Task InsertMany_creates_every_job_with_its_own_state_and_history()
+    {
+        var jobs = new[]
+        {
+            New(queue: "emails", priority: 7, args: """{"n":1}"""),
+            New(runAt: T0.AddMinutes(5)),
+            New(name: "other", maxAttempts: 5),
+        };
+        var ids = await _store.InsertManyAsync(jobs, Ct);
+
+        Assert.Equal(jobs.Select(j => j.Id), ids);
+        var first = await Get(ids[0]);
+        Assert.Equal((JobState.Enqueued, "emails", 7, 1), (first.State, first.Queue, first.Priority, first.Args.GetProperty("n").GetInt32()));
+        Assert.Equal([(JobState.Enqueued, Reasons.Created)], History(first));
+        var scheduled = await Get(ids[1]);
+        Assert.Equal((JobState.Scheduled, T0.AddMinutes(5)), (scheduled.State, scheduled.ScheduledAt));
+        Assert.Equal([(JobState.Scheduled, Reasons.ScheduledAtCreation)], History(scheduled));
+        Assert.Equal(("other", 5), ((await Get(ids[2])).Name, (await Get(ids[2])).MaxAttempts));
+    }
+
+    [Fact]
+    public async Task InsertMany_enqueues_in_batch_order()
+    {
+        var jobs = Enumerable.Range(0, 20).Select(_ => New()).ToList();
+        var ids = await _store.InsertManyAsync(jobs, Ct);
+        Assert.Equal(ids, (await Claim(limit: 20, order: ClaimOrder.Fifo)).Select(j => j.Id));
+    }
+
+    [Fact]
+    public async Task InsertMany_returns_the_holders_of_held_keys_including_earlier_jobs_of_the_batch()
+    {
+        var holder = await Insert(key: "held");
+        var jobs = new[] { New(key: "held"), New(key: "new"), New(), New(key: "new") };
+        var ids = await _store.InsertManyAsync(jobs, Ct);
+
+        Assert.Equal([holder, jobs[1].Id, jobs[2].Id, jobs[1].Id], ids);
+        Assert.Equal(3, (await _store.ListAsync(null, 10, false, Ct)).Count);
+        Assert.Null(await _store.GetAsync(jobs[0].Id, Ct));
+        Assert.Null(await _store.GetAsync(jobs[3].Id, Ct));
+    }
+
+    [Fact]
+    public async Task Concurrent_batches_with_one_key_create_one_job()
+    {
+        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => _store.InsertManyAsync([New(), New(key: "k")], Ct)));
+        Assert.Single(results.Select(r => r[1]).Distinct());
+        Assert.Equal(9, (await _store.ListAsync(null, 100, false, Ct)).Count);
+    }
+
+    [Fact]
+    public async Task InsertMany_of_nothing_inserts_nothing()
+    {
+        Assert.Empty(await _store.InsertManyAsync([], Ct));
+        Assert.Empty(await _store.ListAsync(null, 10, false, Ct));
+    }
+
     // ---- promote ----
 
     [Fact]
@@ -720,7 +779,12 @@ public abstract class JobStoreContract : IAsyncLifetime
     private Task<Guid> Insert(
         DateTime? runAt = null, string queue = JobQueues.Default, int priority = 0, string? key = null, string name = "job",
         string args = "{}", int maxAttempts = 3) =>
-        _store.InsertAsync(new NewJob(Guid.CreateVersion7(), name, args, 1, maxAttempts, 1000, 0, runAt, T0, queue, priority, key), Ct);
+        _store.InsertAsync(New(runAt, queue, priority, key, name, args, maxAttempts), Ct);
+
+    private static NewJob New(
+        DateTime? runAt = null, string queue = JobQueues.Default, int priority = 0, string? key = null, string name = "job",
+        string args = "{}", int maxAttempts = 3) =>
+        new(Guid.CreateVersion7(), name, args, 1, maxAttempts, 1000, 0, runAt, T0, queue, priority, key);
 
     private async Task<Job> Get(Guid id) => await _store.GetAsync(id, Ct) ?? throw new InvalidOperationException($"job {id} missing");
 

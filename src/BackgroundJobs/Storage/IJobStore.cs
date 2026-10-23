@@ -187,6 +187,13 @@ public interface IJobStore
     Task<Guid> InsertAsync(NewJob job, CancellationToken ct);
 
     /// <summary>
+    /// <see cref="InsertAsync"/> for every job of <paramref name="jobs"/>, in order, in one atomic step: all are written or
+    /// none. Returns, per job, what InsertAsync would: its own id, or the id of the unfinished job holding its key, which
+    /// may be an earlier job of the same batch. Jobs entering enqueued take FIFO sequence numbers in batch order.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> InsertManyAsync(IReadOnlyList<NewJob> jobs, CancellationToken ct);
+
+    /// <summary>
     /// Null when there is no such job.
     /// </summary>
     Task<Job?> GetAsync(Guid id, CancellationToken ct);

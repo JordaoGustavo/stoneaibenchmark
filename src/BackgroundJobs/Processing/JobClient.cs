@@ -11,8 +11,54 @@ internal sealed class JobClient(
 
     public async Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? jobOptions = null, CancellationToken ct = default)
     {
+        var job = Prepare(jobName, args, typeof(TArgs), jobOptions, time.UtcNow());
+        var stored = await store.InsertAsync(job, ct);
+        if (stored == job.Id) signals.Entered(job.Creation.To);
+        return stored;
+    }
+
+    public async Task<IReadOnlyList<Guid>> EnqueueManyAsync(IEnumerable<JobToEnqueue> jobs, CancellationToken ct = default)
+    {
+        var batch = PrepareMany(jobs);
+        if (batch.Count == 0) return [];
+        var stored = await store.InsertManyAsync(batch, ct);
+        for (var i = 0; i < batch.Count; i++)
+            if (stored[i] == batch[i].Id) signals.Entered(batch[i].Creation.To);
+        return stored;
+    }
+
+    /// <summary>
+    /// Validates and resolves every job before anything is written, so one invalid job fails the whole batch.
+    /// </summary>
+    /// <exception cref="ArgumentException"/>
+    internal IReadOnlyList<NewJob> PrepareMany(IEnumerable<JobToEnqueue> jobs)
+    {
+        ArgumentNullException.ThrowIfNull(jobs);
+        var now = time.UtcNow();
+        var batch = new List<NewJob>();
+        foreach (var j in jobs)
+        {
+            try
+            {
+                if (j == null) throw new ArgumentException("the job is null");
+                batch.Add(Prepare(j.JobName, j.Args, j.Args?.GetType() ?? typeof(object), j.Options, now));
+            }
+            catch (ArgumentException e)
+            {
+                throw new ArgumentException($"jobs[{batch.Count}]: {e.Message}; nothing was enqueued", nameof(jobs), e);
+            }
+        }
+        return batch;
+    }
+
+    /// <summary>
+    /// The store; store packages check it is theirs before writing on a caller's transaction.
+    /// </summary>
+    internal IJobStore Store => store;
+
+    private NewJob Prepare(string jobName, object? args, Type argsType, JobOptions? o, DateTime now)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
-        var o = jobOptions;
         JobOptions.CheckIdempotencyKey(o?.IdempotencyKey);
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
@@ -20,14 +66,10 @@ internal sealed class JobClient(
         var registration = registry.Find(jobName);
         registration?.CheckArgs(args);
 
-        var now = time.UtcNow();
-        var id = JobIds.Next(now);
-        var job = new NewJob(
-            id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
-            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey);
-        var stored = await store.InsertAsync(job, ct);
-        if (stored == id) signals.Entered(job.Creation.To);
-        return stored;
+        return new NewJob(
+            JobIds.Next(now), jobName, JsonSerializer.Serialize(args, argsType, JobJson.Options), registration?.Options.ArgsVersion ?? 1,
+            settings.MaxAttempts, settings.RetryDelayMs, settings.RetryJitterMs, o?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority,
+            o?.IdempotencyKey);
     }
 
     public async Task<Job> GetAsync(Guid id, CancellationToken ct = default) =>

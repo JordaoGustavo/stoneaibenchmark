@@ -45,6 +45,10 @@ await jobs.EnqueueAsync("send-email", args, new JobOptions
 });
 ```
 
+Lote atômico: `jobs.EnqueueManyAsync(items.Select(i => new JobToEnqueue("send-email", args, options)))`. Outbox no Postgres:
+`jobs.EnqueueAsync(npgsqlTransaction, "send-email", args)` (ou `EnqueueManyAsync(tx, ...)`): o job só existe se a
+transação da aplicação fizer commit.
+
 `IJobClient` (singleton) também tem `GetAsync`, `ListAsync`, `DeleteAsync`, `RequeueAsync`, `CancelAsync`. Não existe
 método `Schedule`: agendar é `EnqueueAsync` com `RunAt`.
 

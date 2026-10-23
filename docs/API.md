@@ -81,11 +81,17 @@ Singleton. Erros do banco propagam para quem chamou.
 | Membro | Contrato |
 |---|---|
 | `Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? options = null, CancellationToken ct = default)` | Persiste e retorna o id (UUIDv7). `RunAt` futuro → `scheduled`; senão `enqueued`. Nome desconhecido é **aceito**; só nós que registraram o nome fazem claim dele, então o job fica em `enqueued` (sem gastar tentativas, fila aparece parada no health) até subir um nó que o registre. Com `IdempotencyKey` em uso por job não finalizado, não cria nada e retorna o id dele. `ArgumentException`: nome vazio, chave em branco ou com mais de 200 caracteres, `MaxAttempts < 1`, `RetryDelay`/`RetryJitter` negativos ou acima de `int.MaxValue` ms, fila inválida, prioridade fora de `-100..100`, args de tipo diferente do registrado (`JsonElement`/`JsonNode` são aceitos) |
+| `Task<IReadOnlyList<Guid>> EnqueueManyAsync(IEnumerable<JobToEnqueue> jobs, CancellationToken ct = default)` | Enfileiramento em lote, **atômico** (todos ou nenhum), numa chamada ao store (no Postgres, um único `INSERT ... SELECT FROM unnest(...)`). Retorna os ids na ordem de entrada. Cada job é validado como no `EnqueueAsync` antes de gravar qualquer coisa; o primeiro inválido lança `ArgumentException` com `jobs[i]` na mensagem e nada é criado. `IdempotencyKey` por job: chave em uso por job não finalizado, **ou por um job anterior do mesmo lote**, não cria nada e devolve o id do dono. Os jobs que entram em `enqueued` ficam na ordem do lote (FIFO). Lote vazio não grava nada |
 | `Task<Job> GetAsync(Guid id, CancellationToken ct = default)` | `JobNotFoundException` |
 | `Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default)` | Ordem de id (= criação), crescente a menos que `descending`. `after` = último id visto. `ArgumentException` se `limit` estiver fora de `1..1000` |
 | `Task DeleteAsync(Guid id, CancellationToken ct = default)` | Só `scheduled`/`enqueued` → `deleted`. `JobNotFoundException`, `InvalidJobTransitionException` |
 | `Task RequeueAsync(Guid id, CancellationToken ct = default)` | Só estados finalizados → `enqueued`, tentativas zeradas, histórico mantido. `JobNotFoundException`, `InvalidJobTransitionException`, `IdempotencyKeyConflictException` |
 | `Task CancelAsync(Guid id, CancellationToken ct = default)` | `scheduled`/`enqueued` → `cancelled` na hora; `processing`: dispara o token (na hora neste nó, em até `LeaseDuration / 3` em outro) e termina em `cancelled`, a menos que o job conclua com sucesso. `JobNotFoundException`, `InvalidJobTransitionException` |
+
+### `sealed record JobToEnqueue(string JobName, object? Args, JobOptions? Options = null)`
+
+Um job do lote de `EnqueueManyAsync`. `Args` é serializado pelo tipo em tempo de execução e, para um nome registrado,
+precisa ser do tipo registrado (ou `JsonElement`/`JsonNode`).
 
 ## Opções
 
@@ -275,7 +281,7 @@ comentários de `src/BackgroundJobs/Storage/IJobStore.cs` e é verificado por `t
 
 | Tipo | Papel |
 |---|---|
-| `interface IJobStore` | `MigrateAsync`, `InsertAsync`, `GetAsync`, `ListAsync`, `NextRunAtAsync`, `PromoteDueAsync`, `ClaimAsync`, `RegisterConsumerAsync`, `FinishAsync`, `RenewLeasesAsync`, `CancelAsync`, `RecoverAsync`, `QueueStatsAsync`, `ApplyAsync`, `UpsertRecurringAsync`, `GetRecurringAsync`, `ListRecurringAsync`, `RemoveRecurringAsync`, `DueRecurringAsync`, `NextRecurringAtAsync`, `FireRecurringAsync`, `PurgeFinishedAsync` |
+| `interface IJobStore` | `MigrateAsync`, `InsertAsync`, `InsertManyAsync`, `GetAsync`, `ListAsync`, `NextRunAtAsync`, `PromoteDueAsync`, `ClaimAsync`, `RegisterConsumerAsync`, `FinishAsync`, `RenewLeasesAsync`, `CancelAsync`, `RecoverAsync`, `QueueStatsAsync`, `ApplyAsync`, `UpsertRecurringAsync`, `GetRecurringAsync`, `ListRecurringAsync`, `RemoveRecurringAsync`, `DueRecurringAsync`, `NextRecurringAtAsync`, `FireRecurringAsync`, `PurgeFinishedAsync` |
 | `interface IJobStoreListener` | `Task RunAsync(CancellationToken ct)`: acorda os loops quando outro nó muda o store |
 | `interface IJobSignals` | `void JobsReady()`, `void SchedulesChanged()` |
 | `static class JobSignalsExtensions` | `void Entered(this IJobSignals, JobState)` |
@@ -297,6 +303,22 @@ static BackgroundJobsBuilder UsePostgres(this BackgroundJobsBuilder builder, str
 Connection string no formato Npgsql (`Host=...;Database=...`); URLs `postgres://` não são aceitas. `ArgumentException`
 se nula ou em branco. As migrations (`src/BackgroundJobs.Postgres/Migrations/NNN_*.sql`, tabela `bj_migrations`) são
 aplicadas na partida sob advisory lock. Notificações no canal `bj_jobs`.
+
+### Enfileiramento transacional (outbox): `static class PostgresJobClientExtensions`
+
+```csharp
+static Task<Guid> EnqueueAsync<TArgs>(this IJobClient client, NpgsqlTransaction transaction, string jobName, TArgs args,
+    JobOptions? options = null, CancellationToken ct = default)
+static Task<IReadOnlyList<Guid>> EnqueueManyAsync(this IJobClient client, NpgsqlTransaction transaction,
+    IEnumerable<JobToEnqueue> jobs, CancellationToken ct = default)
+```
+Grava os jobs na transação da aplicação: eles só existem se ela fizer commit; rollback não deixa nada (e libera a
+`IdempotencyKey`). Mesma validação e mesmo retorno de `EnqueueAsync`/`EnqueueManyAsync`. A transação precisa estar aberta
+no mesmo banco de `UsePostgres`. Os workers acordam pelo `NOTIFY bj_jobs`, que o Postgres entrega no commit (em todos os
+nós, inclusive este) e descarta no rollback; antes do commit nada roda. Chave já usada por um job criado antes na mesma
+transação devolve esse job; chave inserida por outra transação ainda aberta faz o insert esperar por ela. Use
+`READ COMMITTED` (padrão do Postgres): em `REPEATABLE READ`/`SERIALIZABLE` esse conflito vira erro de serialização que a
+aplicação precisa repetir. `InvalidOperationException` se o cliente não usa o store Postgres ou se a transação já terminou.
 
 ## `BackgroundJobs.AspNetCore` (API HTTP)
 

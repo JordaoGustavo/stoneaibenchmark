@@ -18,6 +18,11 @@ entre versões menores.
 
 ### Adicionado
 
+- Enfileiramento em lote: `IJobClient.EnqueueManyAsync(IEnumerable<JobToEnqueue>)`, atômico, com opções e
+  `IdempotencyKey` por job; no Postgres é um único `INSERT` a partir de arrays. Novo método `IJobStore.InsertManyAsync`
+  no SPI: stores de terceiros precisam implementá-lo.
+- Enfileiramento transacional (outbox) no Postgres: `PostgresJobClientExtensions.EnqueueAsync(tx, ...)` e
+  `EnqueueManyAsync(tx, ...)` gravam os jobs na `NpgsqlTransaction` da aplicação; eles só existem se ela fizer commit.
 - `ClaimRequest.Names` (SPI de store): restringe o claim a esses nomes; `null` aceita qualquer nome. Stores de terceiros
   precisam aplicar o filtro (veja "Escrevendo um novo store" em `docs/INTEGRACAO.md`).
 
