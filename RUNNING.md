@@ -23,7 +23,7 @@ dotnet run --project src/BackgroundJobs.Demo
 
 `POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro).
 
-**Desvio da spec:** o armazenamento é Postgres, então `DATA_DIR` não é usado; os dados ficam no volume `pgdata` do compose.
+**Desvio da [spec](docs/SPEC.md):** o armazenamento é Postgres, então `DATA_DIR` não é usado; os dados ficam no volume `pgdata` do compose.
 Reiniciar com os mesmos dados = rodar a demo de novo apontando para o mesmo `DATABASE_URL`.
 Para começar do zero: `docker compose down -v`.
 
@@ -93,6 +93,7 @@ A API HTTP de gerenciamento é opt-in e fica no pacote `BackgroundJobs.AspNetCor
   recuperado e executado de novo enquanto a execução original ainda roda (at-least-once); o resultado da
   execução original é descartado pela checagem de `version`/`locked_by`.
 - Se o resultado de uma tentativa não puder ser gravado (banco fora), o job só é recuperado quando o lease vence.
+- `UNREGISTERED_JOBS` (nomes separados por vírgula, ex. `log-message`) deixa esses jobs fora do registro, simulando um nó de um deploy antigo: ele não faz claim deles.
 - Circuit breaker por tipo de job é opt-in no registro (`o.CircuitBreaker = new(5, TimeSpan.FromSeconds(30))`); a demo só usa em `fail-n-times` quando `FAIL_BREAKER_THRESHOLD` (e opcionalmente `FAIL_BREAKER_SECONDS`) está definido.
 - Observabilidade: `QUEUE_MONITOR_MS` e `STALLED_QUEUE_SECONDS` ajustam a amostragem da fila e o limite de fila parada; `GET /demo/telemetry` expõe spans e métricas capturados em memória; para exportar de verdade veja [Telemetria](#telemetria-otlp--grafana).
 - Retenção: `RETENTION_SECONDS` (padrão 7 dias; `forever` mantém tudo) `RETENTION_SWEEP_MS` (padrão 60000) e `RETENTION_BATCH` (padrão 1000) controlam a limpeza de jobs finalizados.

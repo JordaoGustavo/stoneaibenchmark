@@ -1,6 +1,6 @@
 # Biblioteca de jobs em background
 
-> **Integrando a biblioteca?** Veja o [Guia de Integração](docs/INTEGRACAO.md).
+> **Integrando a biblioteca?** Veja o [Guia de Integração](INTEGRACAO.md).
 
 ## 1. Objetivo
 

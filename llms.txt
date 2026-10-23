@@ -1,0 +1,23 @@
+# BackgroundJobs
+
+> Biblioteca .NET 10 de jobs em segundo plano persistidos em PostgreSQL: enfileiramento e agendamento, retry com atraso fixo, filas e prioridades, jobs recorrentes (cron), chaves de idempotência, timeout e cancelamento cooperativo, recuperação após crash por lease e vários nós no mesmo banco. Pacotes: BackgroundJobs (núcleo), BackgroundJobs.Postgres, BackgroundJobs.AspNetCore (API HTTP) e BackgroundJobs.Dashboard.
+
+Pontos que mais causam erro: `FinishedJobRetention` é obrigatória; é preciso escolher um store (`.UsePostgres` ou `.UseInMemoryStorage`); os args são persistidos (para mudanças incompatíveis use `ArgsVersion` e `UpgradeArgs`); a entrega é at-least-once; nomes de job desconhecidos são aceitos no enqueue e falham na execução.
+
+## Documentação
+
+- [README](README.md): apresentação, pacotes, instalação e início rápido
+- [AGENTS.md](AGENTS.md): como usar a biblioteca (com armadilhas) e como trabalhar neste repositório
+- [Guia de integração](docs/INTEGRACAO.md): conceitos, configuração, ciclo de vida, HTTP, health, banco e operação
+- [Referência da API](docs/API.md): assinaturas e contratos de todos os tipos públicos e rotas HTTP
+
+## Exemplos
+
+- [Índice dos exemplos](samples/README.md): o que cada exemplo mostra e como rodá-lo
+- [WorkerExample](samples/WorkerExample/Program.cs): worker sem HTTP; registrar, enfileirar e agendar
+
+## Opcional
+
+- [CHANGELOG](CHANGELOG.md): histórico de mudanças e de comportamento
+- [Como executar](RUNNING.md): demo, telemetria e testes
+- [Especificação original](docs/SPEC.md): o desafio que originou a biblioteca

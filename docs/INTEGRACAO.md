@@ -2,7 +2,7 @@
 
 Biblioteca .NET para execução de jobs em segundo plano persistidos em PostgreSQL: agendamento, retry, FIFO, múltiplos workers, recuperação de crash e parada graciosa.
 
-> Para rodar o demo e os testes, veja [`RUNNING.md`](../RUNNING.md). A especificação original está no [`README.md`](../README.md).
+> Para rodar o demo e os testes, veja [`RUNNING.md`](../RUNNING.md). A especificação original está em [`docs/SPEC.md`](SPEC.md).
 
 ## Sumário
 
@@ -34,7 +34,7 @@ A biblioteca é dividida em pacotes; referencie só o que usar:
 |---|---|---|
 | `BackgroundJobs` | `AddBackgroundJobs`, `IJobClient`, registro de jobs, regras de transição, store em memória, health check | — |
 | `BackgroundJobs.Postgres` | `.UsePostgres(connectionString)`: store, migrations e LISTEN/NOTIFY | `BackgroundJobs`, Npgsql, Dapper |
-| `BackgroundJobs.AspNetCore` | `MapBackgroundJobsApi()`: `/api/jobs`, `/health`, `/health/details` | `BackgroundJobs`, ASP.NET Core |
+| `BackgroundJobs.AspNetCore` | `MapBackgroundJobsApi()`: `/api/jobs`, `/api/recurring`, `/health`, `/health/details` | `BackgroundJobs`, ASP.NET Core |
 | `BackgroundJobs.Dashboard` | `MapBackgroundJobsDashboard()`: UI HTML em `/jobs` | `BackgroundJobs`, ASP.NET Core |
 
 ```xml
@@ -119,7 +119,10 @@ jobs.Register<TJob, TArgs>(string name, Action<JobRegistrationOptions>? configur
 
 - `name` é a chave estável persistida no banco. **Não renomeie** um job com instâncias pendentes.
 - Nome vazio ou duplicado lança `ArgumentException`.
-- Um job enfileirado com nome não registrado falha na execução com erro `"unknown job"` (consome tentativas normalmente).
+- Cada nó só faz claim de jobs cujo nome **ele** registrou. Um job com nome que nenhum nó vivo registrou (nome com erro
+  de digitação, ou um job novo durante um deploy gradual em que só os nós novos o têm) fica em `enqueued`, sem gastar
+  tentativas, até subir um nó que o registre; enquanto isso a fila aparece como parada em `/health/details` (veja
+  [Health check](#10-health-check-e-observabilidade)). O erro `unknown job '<nome>'` na execução continua existindo só como rede de segurança.
 - O tipo de args faz parte do registro: `EnqueueAsync` com um nome registrado e args de outro tipo lança `ArgumentException`
   (`JsonElement`/`JsonNode` são aceitos como JSON cru no formato atual).
 
@@ -170,7 +173,7 @@ Os cenários `tests/BackgroundJobs.E2E/Scenarios/S14_ArgsVersioning.cs` exercita
 |---|---|---|
 | `EnqueueAsync<TArgs>(name, args, JobOptions? options = null, ct)` | Persiste e retorna o `Guid` (UUIDv7). Com `IdempotencyKey` já usada por um job não terminado, não cria nada e retorna o id dele | `ArgumentException` (nome vazio, opções inválidas) |
 | `GetAsync(id, ct)` | Retorna o `Job` completo, com histórico e tentativas | `JobNotFoundException` |
-| `ListAsync(Guid? after = null, int limit = 100, ct)` | Resumos em ordem de criação; paginação por cursor (`after` = último id visto). `limit` 1..1000 | `ArgumentException` |
+| `ListAsync(Guid? after = null, int limit = 100, bool descending = false, ct)` | Resumos em ordem de criação (mais novos primeiro com `descending: true`); paginação por cursor (`after` = último id visto). `limit` 1..1000 | `ArgumentException` |
 | `DeleteAsync(id, ct)` | Remove da fila (só `scheduled`/`enqueued`) | `JobNotFoundException`, `InvalidJobTransitionException` |
 | `RequeueAsync(id, ct)` | Reexecuta (só `succeeded`/`failed`/`deleted`/`cancelled`), zera tentativas, mantém histórico | `JobNotFoundException`, `InvalidJobTransitionException`, `IdempotencyKeyConflictException` (a chave do job está com outro job não terminado) |
 | `CancelAsync(id, ct)` | Para de vez (`scheduled`/`enqueued` na hora; `processing` dispara o token — na hora neste nó, em até `LeaseDuration / 3` em outro — e termina em `cancelled`) | `JobNotFoundException`, `InvalidJobTransitionException` |
@@ -247,6 +250,7 @@ ou em tempo de execução, via `IRecurringJobClient`:
 - **Sem sobreposição controlada:** cada ocorrência é um job independente; uma não espera a anterior terminar.
 - **Vários nós:** cada ocorrência gera exatamente um job (o disparo e o avanço de `next_run_at` são atômicos), sempre com os args e opções vigentes: um disparo que cruza com um upsert é refeito com a definição nova.
 - **Job registrado:** ao contrário de `EnqueueAsync`, o nome do job precisa estar registrado no processo que faz o upsert.
+  Com `UpsertAsync`, um job não registrado lança `ArgumentException`. Com `AddRecurringJob`, o erro **não** impede o host de subir: é só registrado em log (`recurring job {Id} was not declared`) e a definição não é criada. Confira o log após o deploy.
 - Uma definição que um nó não consegue agendar (fuso desconhecido nele) é registrada em log uma vez e deixada para os outros nós, sem atrasar as demais.
 - Ids: 1–100 caracteres `A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `:`. Remover `AddRecurringJob` do código não apaga a definição — use `RemoveAsync`.
 
@@ -390,7 +394,9 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   isso são limitadas) e outro com score `sequência`.
   `ClaimRequest.ConcurrencyLimits` traz o `MaxConcurrency` por nome: o claim pula jobs de um nome que já tem o limite em
   `processing` e continua preenchendo com os seguintes, e claims concorrentes de nós diferentes juntos nunca passam do
-  limite (no Postgres, `pg_advisory_xact_lock` por nome antes de contar).
+  limite (no Postgres, `pg_advisory_xact_lock` por nome antes de contar). `ClaimRequest.Names`, quando não nulo, restringe
+  o claim a esses nomes (o servidor passa os nomes registrados no nó); os demais são pulados como `ExcludedNames` e ficam
+  em `enqueued`.
   `RegisterConsumerAsync` grava quais filas cada nó consome, com validade (num Redis, uma chave com TTL por nó e fila);
   `QueueStatsAsync` devolve uma entrada por fila com jobs prontos e se algum nó vivo a consome.
 - **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via
@@ -411,7 +417,7 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 |---|---|---|
 | `GET /health` | `200 {"status":"ok"}` | `503 {"status":"unavailable"}` |
 | `GET /health/details` | `200` relatório (healthy/degraded) — ver [§10](#10-health-check-e-observabilidade) | `503` quando não está processando |
-| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts"}],"nextCursor":"<id>"\|null}` | `400` |
+| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts","queue","priority"}],"nextCursor":"<id>"\|null}` | `400` |
 | `GET /api/jobs/{id}` | `200` job completo | `404` |
 | `DELETE /api/jobs/{id}` | `200 {"id":"...","state":"deleted"}` | `404`, `409` |
 | `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` (estado não permite, ou a chave de idempotência está com outro job) |
@@ -426,7 +432,7 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 - Erros sempre no formato `{"error":"mensagem"}`. Id que não é Guid → `404`.
 - Recorrente: `id, job, cron, timeZone, args, queue, priority, maxAttempts, retryDelayMs, retryJitterMs, nextRunAt, lastRunAt, lastJobId, createdAt, updatedAt`.
 - `limit` padrão 1000; `nextCursor` só vem preenchido quando a página está cheia.
-- Job completo (ordem das chaves): `id, name, args, state, attempts, maxAttempts, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state,at,reason}], attemptHistory[{attempt,startedAt,finishedAt,outcome,error}]`. Datas ISO-8601 UTC com `Z`; `outcome` é `null` enquanto a tentativa roda.
+- Job completo (ordem das chaves): `id, name, args, state, attempts, maxAttempts, queue, priority, idempotencyKey, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state,at,reason}], attemptHistory[{attempt,startedAt,finishedAt,outcome,error}]`. Datas ISO-8601 UTC com `Z`; `outcome` é `null` enquanto a tentativa roda.
 
 A API **não cria jobs** — enfileiramento é responsabilidade da sua aplicação via `IJobClient` (o Demo mostra um exemplo em `POST /demo/jobs`). Para reutilizar o formato de erro: `ManagementEndpoints.Error(status, message)`.
 
@@ -445,6 +451,10 @@ Pacote `BackgroundJobs.Dashboard`. `app.MapBackgroundJobsDashboard(string prefix
 - `GET {prefix}/` — lista paginada (50 por página), filtro por estado, auto-refresh a cada 5 s (desligável com `?refresh=off`).
 - `GET {prefix}/{id}` — detalhes, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete/Cancel quando a transição é válida.
 - `POST {prefix}/{id}/delete`, `POST {prefix}/{id}/requeue` e `POST {prefix}/{id}/cancel` — ações via formulário.
+- `GET {prefix}/new`, `GET {prefix}/new/{name}` e `POST {prefix}/new/{name}` — **disparo de jobs**: lista os jobs registrados, gera um formulário a partir do tipo de args e enfileira com as opções informadas. Quem acessa o dashboard consegue enfileirar qualquer job registrado.
+- `POST {prefix}/preferences` — tema e fuso horário do visitante, guardados em cookie.
+
+Como o dashboard **enfileira jobs** (não é só leitura), proteja-o como uma API de escrita.
 
 Segurança embutida: CSP restritiva, `nosniff`, `no-referrer`, `no-store` e rejeição (`403`) de POSTs cross-site via `Sec-Fetch-Site`. **Não há autenticação embutida** — recomendado:
 
@@ -480,7 +490,7 @@ Ou use as rotas de `MapBackgroundJobsApi()`: `/health` (readiness, contrato da s
 }
 ```
 
-A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. `ready`/`oldestReadyAgeSeconds`/`stalled` somam só as filas consumidas; `queues[]` detalha cada uma (filas consumidas vazias aparecem com 0, e as demais com jobs prontos com `consumed: false`). `orphaned: true` (e status `degraded`) quando **nenhum nó vivo** consome a fila e o job mais antigo dela espera há mais que `StalledQueueThreshold`, por exemplo um enqueue numa fila com nome errado. Cada nó renova o registro das suas filas a cada `LeaseDuration / 3`. Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
+A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. `ready`/`oldestReadyAgeSeconds`/`stalled` somam só as filas consumidas; `queues[]` detalha cada uma (filas consumidas vazias aparecem com 0, e as demais com jobs prontos com `consumed: false`). `orphaned: true` (e status `degraded`) quando **nenhum nó vivo** consome a fila e o job mais antigo dela espera há mais que `StalledQueueThreshold`, por exemplo um enqueue numa fila com nome errado. Cada nó renova o registro das suas filas a cada `LeaseDuration / 3`. Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada. O mesmo vale para jobs de um nome que nenhum nó vivo registrou: a fila fica `stalled` em todo nó que a consome (e `orphaned` se nenhum nó a consome). O health não diz quais nomes estão sem nó; para achá-los, liste os jobs `enqueued` antigos (no dashboard, `GET {prefix}/?state=enqueued`; a API `/api/jobs` não filtra por estado) e compare com os nomes registrados.
 
 ### OpenTelemetry
 
@@ -513,7 +523,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 
 - Migrations embutidas são aplicadas **automaticamente** na partida, numa transação protegida por advisory lock (seguro com vários nós subindo juntos). Controle em `bj_migrations`.
 - Tabelas: `bj_jobs`, `bj_attempts`, `bj_history`, `bj_queue_consumers`, `bj_recurring` (+ sequence `bj_enqueue_seq`). O usuário do banco precisa de permissão de `CREATE` no schema na primeira execução.
-- **Não há limpeza automática** de jobs antigos. Se o volume for alto, crie uma rotina própria (ex.: apagar `succeeded` antigos — `bj_attempts`/`bj_history` referenciam `bj_jobs` por FK).
+- Jobs finalizados são removidos automaticamente após `FinishedJobRetention` (veja [Retenção](#retenção)), junto com `bj_attempts`/`bj_history`.
 
 ## 12. Operação: múltiplos nós, crash e shutdown
 
