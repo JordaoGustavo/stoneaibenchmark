@@ -76,6 +76,14 @@ internal sealed class JobServer(
         await _stopping.CancelAsync();
         // Deliberately not bounded by the host's token: running jobs are awaited.
         await _run;
+        // Node ids are per instance, so no restart would ever replace this registration: drop it now rather than
+        // leave the queues looking consumed until it lapses. After a crash it still lapses within a lease.
+        try
+        {
+            using var bound = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await store.RegisterConsumerAsync(options.Value.NodeId, [], time.UtcNow(), time.UtcNow(), bound.Token);
+        }
+        catch (Exception e) { logger.LogWarning(e, "could not deregister as queue consumer"); }
         logger.LogInformation("job server stopped");
     }
 

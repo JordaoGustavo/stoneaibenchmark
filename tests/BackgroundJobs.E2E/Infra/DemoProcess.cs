@@ -19,6 +19,9 @@ public sealed class DemoProcess : IAsyncDisposable
         Api = new ApiClient(new Uri($"http://127.0.0.1:{port}"));
     }
 
+    /// Recovery waits for a dead node's lease to expire; a short one keeps crash scenarios fast.
+    public static readonly IReadOnlyDictionary<string, string> ShortLease = new Dictionary<string, string> { ["LEASE_MS"] = "1500" };
+
     /// A null <paramref name="connectionString"/> runs the demo on the in-memory store.
     public static async Task<DemoProcess> StartAsync(
         string? connectionString, int workers = 4, int? port = null, IReadOnlyDictionary<string, string>? env = null)

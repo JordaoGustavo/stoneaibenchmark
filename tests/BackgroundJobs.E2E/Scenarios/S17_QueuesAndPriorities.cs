@@ -114,6 +114,23 @@ public sealed class S17_QueuesAndPriorities(PostgresFixture pg)
         Assert.Equal("degraded", (await WaitForHealthAsync(reports, h => h["status"]!.GetValue<string>() == "degraded"))["status"]!.GetValue<string>());
     }
 
+    [Fact]
+    public async Task A_node_that_stops_gracefully_stops_counting_as_a_consumer_at_once()
+    {
+        var db = await pg.CreateDatabaseAsync();
+        var env = new Dictionary<string, string> { ["QUEUE_MONITOR_MS"] = "100", ["STALLED_QUEUE_SECONDS"] = "0.5" };
+        await using var web = await DemoProcess.StartAsync(db, env: env);
+        var reports = await DemoProcess.StartAsync(db, env: new Dictionary<string, string>(env) { ["QUEUES"] = "reports=1" });
+        reports.Terminate();
+        await reports.WaitForExitAsync(TimeSpan.FromSeconds(10));
+
+        // Without deregistering, the stopped node would still count until its 30 s registration lapsed.
+        await web.Api.EnqueueAsync("succeed-after", new { delayMs = 0 }, new { queue = "reports" });
+        var health = await WaitForHealthAsync(web, h => h["queue"]!["queues"]!.AsArray()
+            .Any(q => q!["name"]!.GetValue<string>() == "reports" && q["orphaned"]!.GetValue<bool>()));
+        Assert.Equal("degraded", health["status"]!.GetValue<string>());
+    }
+
     private static async Task<JsonObject> WaitForHealthAsync(DemoProcess demo, Func<JsonObject, bool> until)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);

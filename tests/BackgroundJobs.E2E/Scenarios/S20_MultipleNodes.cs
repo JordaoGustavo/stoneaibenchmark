@@ -24,12 +24,11 @@ public sealed class S20_MultipleNodes(PostgresFixture pg)
     public async Task Jobs_of_a_dead_node_are_recovered_by_a_live_node_once_their_lease_expires()
     {
         var db = await pg.CreateDatabaseAsync();
-        var shortLease = new Dictionary<string, string> { ["LEASE_MS"] = "1500" };
-        var dying = await DemoProcess.StartAsync(db, env: shortLease);
+        var dying = await DemoProcess.StartAsync(db, env: DemoProcess.ShortLease);
 
         var id = await dying.Api.EnqueueAsync("succeed-after", new { delayMs = 3000 }, new { maxAttempts = 2 });
         await dying.Api.WaitForEventsAsync(e => e.Any(x => x.JobId == id && x.Type == "started"));
-        await using var survivor = await DemoProcess.StartAsync(db, env: shortLease);
+        await using var survivor = await DemoProcess.StartAsync(db, env: DemoProcess.ShortLease);
         await dying.KillAsync();
 
         var job = await survivor.Api.WaitForStateAsync(id, "succeeded", TimeSpan.FromSeconds(20));

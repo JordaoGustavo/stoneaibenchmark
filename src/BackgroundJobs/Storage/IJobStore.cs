@@ -118,6 +118,7 @@ public interface IJobStore
     /// Records that <paramref name="nodeId"/> consumes <paramref name="queues"/> until <paramref name="aliveUntil"/>, replacing
     /// what it registered before. Called at start and on every heartbeat. A node that stops renewing counts as gone
     /// once <paramref name="aliveUntil"/> passes; registrations expired before <paramref name="now"/> may be dropped.
+    /// Empty <paramref name="queues"/> deregisters the node (on graceful stop).
     Task RegisterConsumerAsync(string nodeId, IReadOnlyCollection<string> queues, DateTime now, DateTime aliveUntil, CancellationToken ct);
 
     /// Applies <paramref name="transition"/> (<see cref="JobTransition.Succeed"/>, <see cref="JobTransition.Fail"/> or <see cref="JobTransition.Interrupt"/>) if this
