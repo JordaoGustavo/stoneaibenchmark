@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../../src/BackgroundJobs.AspNetCore/BackgroundJobs.AspNetCore.csproj" />
+    <ProjectReference Include="../../src/BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
+    <ProjectReference Include="../../src/BackgroundJobs.Postgres/BackgroundJobs.Postgres.csproj" />
+  </ItemGroup>
+</Project>
