@@ -158,7 +158,9 @@ Datas em UTC (precisão de microssegundos, igual ao Postgres).
 | `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
 | `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
-| `PollInterval` | `250ms` | Intervalo máximo de polling da fila e do agendador |
+| `PollInterval` | `250ms` | Polling de fallback da fila (o caminho normal é LISTEN/NOTIFY do Postgres) |
+| `SchedulerMaxWait` | `5s` | Espera máxima do agendador; normalmente dorme até o próximo `run_at` ou acorda por notificação |
+| `ClaimBatchSize` | `null` | Máximo de jobs por claim; `null` = tantos quanto houver slots livres (nunca acima de `WorkerCount`) |
 | `DefaultMaxAttempts` | `3` | Padrão de `JobOptions.MaxAttempts` |
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |

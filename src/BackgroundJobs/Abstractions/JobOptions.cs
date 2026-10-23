@@ -29,6 +29,9 @@ public sealed class BackgroundJobsOptions
     /// Longest the scheduler sleeps without checking the store; a fallback for missed notifications.
     public TimeSpan SchedulerMaxWait { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// Max jobs claimed per query. Null: as many as there are free worker slots.
+    public int? ClaimBatchSize { get; set; }
+
     public int DefaultMaxAttempts { get; set; } = 3;
     public TimeSpan DefaultRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan DefaultRetryJitter { get; set; } = TimeSpan.Zero;
@@ -43,6 +46,7 @@ public sealed class BackgroundJobsOptions
     {
         if (string.IsNullOrWhiteSpace(ConnectionString)) throw new ArgumentException("ConnectionString is required");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
+        if (ClaimBatchSize < 1) throw new ArgumentException("ClaimBatchSize must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
         if (QueueMonitorInterval <= TimeSpan.Zero) throw new ArgumentException("QueueMonitorInterval must be positive");
         if (StalledQueueThreshold <= TimeSpan.Zero) throw new ArgumentException("StalledQueueThreshold must be positive");

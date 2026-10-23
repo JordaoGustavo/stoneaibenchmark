@@ -25,8 +25,9 @@ internal interface IJobStore
     /// scheduled → enqueued for every job whose run_at has passed. Returns how many were promoted.
     Task<int> PromoteDueAsync(DateTime now, CancellationToken ct);
 
-    /// enqueued → processing for the oldest ready job, opening attempt N+1, in one transaction.
-    Task<ClaimedJob?> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, IReadOnlyCollection<string> excludedNames, CancellationToken ct);
+    /// enqueued → processing for up to <paramref name="limit"/> oldest ready jobs, opening attempt N+1 for each, in one transaction.
+    /// Returned in FIFO order.
+    Task<IReadOnlyList<ClaimedJob>> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct);
 
     /// processing → succeeded. False when this node no longer owns the job.
     Task<bool> SucceedAsync(ClaimedJob job, string nodeId, DateTime finishedAt, CancellationToken ct);
