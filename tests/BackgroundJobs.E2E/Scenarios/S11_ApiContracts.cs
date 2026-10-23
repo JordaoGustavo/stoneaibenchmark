@@ -60,7 +60,7 @@ public sealed class S11_ApiContracts(PostgresFixture pg)
         var all = await (await demo.Api.ListRawAsync()).Content.ReadFromJsonAsync<JsonObject>();
         var items = all!["items"]!.AsArray();
         Assert.Equal(ids, items.Select(i => i!["id"]!.GetValue<string>()));
-        Assert.Equal(["id", "name", "state", "attempts", "queue", "priority"], items[0]!.AsObject().Select(p => p.Key));
+        Assert.Equal(["id", "name", "state", "attempts", "queue", "priority", "continueAfter"], items[0]!.AsObject().Select(p => p.Key));
         Assert.Equal("scheduled", items[0]!["state"]!.GetValue<string>());
 
         var page1 = await (await demo.Api.ListRawAsync("?limit=2")).Content.ReadFromJsonAsync<JsonObject>();
@@ -83,7 +83,7 @@ public sealed class S11_ApiContracts(PostgresFixture pg)
         await demo.Api.WaitForStateAsync(id, "succeeded");
         var job = await (await demo.Api.GetJobRawAsync(id)).Content.ReadFromJsonAsync<JsonObject>();
         Assert.Equal(
-            ["id", "name", "args", "state", "attempts", "maxAttempts", "queue", "priority", "idempotencyKey", "retryDelayMs", "scheduledAt", "createdAt", "updatedAt", "history", "attemptHistory", "continueAfter", "continuationCondition"],
+            ["id", "name", "args", "state", "attempts", "maxAttempts", "queue", "priority", "idempotencyKey", "retryDelayMs", "scheduledAt", "createdAt", "updatedAt", "history", "attemptHistory", "continueAfter", "continuationCondition", "retryJitterMs", "retryBackoff", "retryBackoffMultiplier", "maxRetryDelayMs"],
             job!.Select(p => p.Key));
         Assert.EndsWith("Z", job!["createdAt"]!.GetValue<string>());
         Assert.Equal(["state", "at", "reason"], job!["history"]![0]!.AsObject().Select(p => p.Key));

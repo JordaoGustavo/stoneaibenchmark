@@ -89,7 +89,11 @@ internal sealed class InMemoryJobStore : IJobStore
             return Task.FromResult<Job?>(new Job(
                 r.Id, r.Name, JsonDocument.Parse(r.ArgsJson).RootElement.Clone(), r.ArgsVersion, r.State, r.Attempts, r.MaxAttempts,
                 TimeSpan.FromMilliseconds(r.RetryDelayMs), r.State == JobState.Scheduled ? r.RunAt : null, r.CreatedAt, r.UpdatedAt,
-                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority, r.IdempotencyKey) { ContinueAfter = r.ContinueAfter, Condition = r.Condition });
+                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority, r.IdempotencyKey)
+            {
+                ContinueAfter = r.ContinueAfter, Condition = r.Condition, RetryJitter = TimeSpan.FromMilliseconds(r.RetryJitterMs),
+                RetryBackoffMultiplier = r.RetryBackoffMultiplier, MaxRetryDelay = r.MaxRetryDelayMs is { } cap ? TimeSpan.FromMilliseconds(cap) : null,
+            });
         }
     }
 
@@ -102,11 +106,29 @@ internal sealed class InMemoryJobStore : IJobStore
             var matches = _jobs.Values.Where(r => cursor == null || sign * string.CompareOrdinal(r.Key, cursor) > 0);
             IReadOnlyList<JobSummary> page = (descending ? matches.OrderByDescending(r => r.Key, StringComparer.Ordinal) : matches.OrderBy(r => r.Key, StringComparer.Ordinal))
                 .Take(limit)
-                .Select(r => new JobSummary(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority))
+                .Select(Summary)
                 .ToList();
             return Task.FromResult(page);
         }
     }
+
+    public Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after, int limit, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            var cursor = after?.ToString();
+            IReadOnlyList<JobSummary> page = _jobs.Values
+                .Where(r => r.ContinueAfter == parentId && (cursor == null || string.CompareOrdinal(r.Key, cursor) > 0))
+                .OrderBy(r => r.Key, StringComparer.Ordinal)
+                .Take(limit)
+                .Select(Summary)
+                .ToList();
+            return Task.FromResult(page);
+        }
+    }
+
+    private static JobSummary Summary(Row r) =>
+        new(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority) { ContinueAfter = r.ContinueAfter };
 
     public Task<DateTime?> NextRunAtAsync(CancellationToken ct)
     {

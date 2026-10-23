@@ -18,7 +18,7 @@ public static class ManagementEndpoints
     private sealed record RecurringRequestOptions(string? Queue = null, int? Priority = null, int? MaxAttempts = null, int? RetryDelayMs = null, int? RetryJitterMs = null);
 
     /// <summary>
-    /// Maps /api/jobs (list, get, delete, requeue, cancel), /api/recurring (list, get, put, delete, trigger), /health and
+    /// Maps /api/jobs (list, get, children, delete, requeue, cancel), /api/recurring (list, get, put, delete, trigger), /health and
     /// /health/details. Opt-in.
     /// </summary>
     public static IEndpointRouteBuilder MapBackgroundJobsApi(this IEndpointRouteBuilder app)
@@ -67,20 +67,18 @@ public static class ManagementEndpoints
 
         jobs.MapGet("/", async (IJobClient client, string? after, int? limit, CancellationToken ct) =>
         {
-            Guid? cursor = null;
-            if (after != null)
-            {
-                if (!Guid.TryParse(after, out var parsed)) return Error(400, $"after '{after}' is not a job id; pass the nextCursor of the previous page");
-                cursor = parsed;
-            }
-            var pageSize = limit ?? 1000;
-            if (pageSize is < 1 or > 1000) return Error(400, $"limit {pageSize} is out of range; use 1 to 1000 and page through more with after");
-            var page = await client.ListAsync(cursor, pageSize, ct: ct);
-            return Results.Ok(new
-            {
-                items = page.Select(j => new { id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts, queue = j.Queue, priority = j.Priority }),
-                nextCursor = page.Count == pageSize ? page[^1].Id.ToString() : null,
-            });
+            var (cursor, pageSize, error) = Page(after, limit);
+            if (error != null) return error;
+            return ToPage(await client.ListAsync(cursor, pageSize, ct: ct), pageSize);
+        });
+
+        // A job's continuations (JobOptions.ContinueAfter), in any state, oldest first; paged like the list.
+        jobs.MapGet("/{id}/children", async (IJobClient client, string id, string? after, int? limit, CancellationToken ct) =>
+        {
+            if (!Guid.TryParse(id, out var parentId)) return Error(404, $"job {id} not found");
+            var (cursor, pageSize, error) = Page(after, limit);
+            if (error != null) return error;
+            return ToPage(await client.ListContinuationsAsync(parentId, cursor, pageSize, ct), pageSize);
         });
 
         jobs.MapGet("/{id}", (IJobClient client, string id, CancellationToken ct) =>
@@ -193,6 +191,29 @@ public static class ManagementEndpoints
     /// </summary>
     public static IResult Error(int status, string message) => Results.Json(new { error = message }, statusCode: status);
 
+    private static (Guid? Cursor, int Limit, IResult? Error) Page(string? after, int? limit)
+    {
+        Guid? cursor = null;
+        if (after != null)
+        {
+            if (!Guid.TryParse(after, out var parsed)) return (null, 0, Error(400, $"after '{after}' is not a job id; pass the nextCursor of the previous page"));
+            cursor = parsed;
+        }
+        var pageSize = limit ?? 1000;
+        if (pageSize is < 1 or > 1000) return (null, 0, Error(400, $"limit {pageSize} is out of range; use 1 to 1000 and page through more with after"));
+        return (cursor, pageSize, null);
+    }
+
+    private static IResult ToPage(IReadOnlyList<JobSummary> page, int pageSize) => Results.Ok(new
+    {
+        items = page.Select(j => new
+        {
+            id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts, queue = j.Queue, priority = j.Priority,
+            continueAfter = j.ContinueAfter?.ToString(),
+        }),
+        nextCursor = page.Count == pageSize ? page[^1].Id.ToString() : null,
+    });
+
     private static async Task<IResult> WithJob(string id, Func<Guid, Task<IResult>> action)
     {
         if (!Guid.TryParse(id, out var jobId)) return Error(404, $"job {id} not found");
@@ -224,5 +245,9 @@ public static class ManagementEndpoints
         }),
         continueAfter = job.ContinueAfter?.ToString(),
         continuationCondition = job.Condition?.ToWire(),
+        retryJitterMs = (int)job.RetryJitter.TotalMilliseconds,
+        retryBackoff = job.RetryBackoff == RetryBackoff.Exponential ? "exponential" : "fixed",
+        retryBackoffMultiplier = job.RetryBackoffMultiplier,
+        maxRetryDelayMs = job.MaxRetryDelay is { } cap ? (int?)cap.TotalMilliseconds : null,
     };
 }

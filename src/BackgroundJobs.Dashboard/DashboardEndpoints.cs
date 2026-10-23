@@ -87,7 +87,11 @@ public static class DashboardEndpoints
             foreach (var j in items)
             {
                 var href = $"{basePath}/{j.Id}";
-                body.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(E(j.Name)).Append("</a></td><td>")
+                body.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(E(j.Name)).Append("</a>");
+                if (j.ContinueAfter is { } parentId)
+                    body.Append(" <span class=\"muted\">after <a class=\"mono\" href=\"").Append(basePath).Append('/').Append(parentId).Append("\">")
+                        .Append(parentId.ToString()[..8]).Append("</a></span>");
+                body.Append("</td><td>")
                     .Append(Badge(j.State)).Append("</td><td class=\"num\">").Append(j.Attempts)
                     .Append("</td><td class=\"nowrap\">").Append(Local(j.CreatedAt, tz, now))
                     .Append("</td><td class=\"nowrap\">").Append(Local(j.UpdatedAt, tz, now))
@@ -178,6 +182,11 @@ public static class DashboardEndpoints
                 .Append(Meta("Queue", E(job.Queue)))
                 .Append(Meta("Priority", job.Priority.ToString()))
                 .Append(Meta("Retry delay", Duration(job.RetryDelay)))
+                .Append(Meta("Retry jitter", Duration(job.RetryJitter)))
+                .Append(Meta("Backoff", job.RetryBackoff == RetryBackoff.Exponential
+                    ? $"exponential &times;{job.RetryBackoffMultiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)}, " +
+                      (job.MaxRetryDelay is { } cap ? $"max {Duration(cap)}" : "no cap")
+                    : "fixed"))
                 .Append(Meta("Runs", runs.Count.ToString()))
                 .Append(Meta("Created", Local(job.CreatedAt, tz, now)))
                 .Append(Meta("Updated", Local(job.UpdatedAt, tz, now)));
@@ -185,6 +194,19 @@ public static class DashboardEndpoints
             if (job.ContinueAfter is { } parent)
                 body.Append(Meta("Continues after", $"<a class=\"mono\" href=\"{basePath}/{parent}\">{parent}</a> ({job.Condition?.ToWire()})"));
             body.Append("</dl></div>");
+
+            var children = await client.ListContinuationsAsync(job.Id, limit: ChildrenShown + 1, ct: ct);
+            if (children.Count > 0)
+            {
+                body.Append("<h2>Continuations</h2><div class=\"card children\"><table><thead><tr><th>Name</th><th>State</th><th>Created</th><th>Id</th></tr></thead><tbody>");
+                foreach (var c in children.Take(ChildrenShown))
+                    body.Append("<tr><td><a href=\"").Append(basePath).Append('/').Append(c.Id).Append("\">").Append(E(c.Name)).Append("</a></td><td>")
+                        .Append(Badge(c.State)).Append("</td><td class=\"nowrap\">").Append(Local(c.CreatedAt, tz, now))
+                        .Append("</td><td class=\"mono muted id\">").Append(c.Id.ToString()[..8]).Append("</td></tr>");
+                if (children.Count > ChildrenShown)
+                    body.Append("<tr><td colspan=\"4\" class=\"empty\">Showing the first ").Append(ChildrenShown).Append("; list the rest with GET /api/jobs/{id}/children.</td></tr>");
+                body.Append("</tbody></table></div>");
+            }
 
             body.Append("<div class=\"split\"><section><h2>Timeline</h2>");
             for (var i = runs.Count - 1; i >= 0; i--)
@@ -209,6 +231,8 @@ public static class DashboardEndpoints
     /// <summary>
     /// Walks the id-ordered list until a page of matches is filled; the store has no state index to filter on.
     /// </summary>
+    private const int ChildrenShown = 50;
+
     private static async Task<(List<JobSummary> Items, Guid? Next)> ScanAsync(IJobClient client, JobState? filter, Guid? after, bool descending, CancellationToken ct)
     {
         var items = new List<JobSummary>();
@@ -264,6 +288,13 @@ public static class DashboardEndpoints
             .Append("<div class=\"field\"><label for=\"o-runAt\">Run at <span class=\"muted\">(").Append(E(DashboardForms.ZoneLabel(Zone(http)))).Append(")</span></label><input type=\"datetime-local\" step=\"1\" id=\"o-runAt\" name=\"opt.runAt\" value=\"").Append(Posted("opt.runAt")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-max\">Max attempts</label><input type=\"number\" min=\"1\" step=\"1\" id=\"o-max\" name=\"opt.maxAttempts\" value=\"").Append(Posted("opt.maxAttempts")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-delay\">Retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-delay\" name=\"opt.retryDelayMs\" value=\"").Append(Posted("opt.retryDelayMs")).Append("\"></div>")
+            .Append("<div class=\"field\"><label for=\"o-jitter\">Retry jitter (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-jitter\" name=\"opt.retryJitterMs\" value=\"").Append(Posted("opt.retryJitterMs")).Append("\"></div>")
+            .Append("</div><div class=\"row\">")
+            .Append("<div class=\"field\"><label for=\"o-backoff\">Retry backoff</label><select id=\"o-backoff\" name=\"opt.retryBackoff\">")
+            .Append(BackoffOption("", "Server default", posted)).Append(BackoffOption("fixed", "Fixed", posted)).Append(BackoffOption("exponential", "Exponential", posted))
+            .Append("</select></div>")
+            .Append("<div class=\"field\"><label for=\"o-mult\">Backoff multiplier</label><input type=\"number\" min=\"1\" max=\"100\" step=\"any\" id=\"o-mult\" name=\"opt.retryBackoffMultiplier\" value=\"").Append(Posted("opt.retryBackoffMultiplier")).Append("\"></div>")
+            .Append("<div class=\"field\"><label for=\"o-cap\">Max retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-cap\" name=\"opt.maxRetryDelayMs\" value=\"").Append(Posted("opt.maxRetryDelayMs")).Append("\"></div>")
             .Append("</div></details><div class=\"actions end\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
             .Append("<button class=\"btn\" type=\"submit\">Enqueue job</button></div></form>");
         return Page(http, errors.Count > 0 ? 400 : 200, name, body.ToString(), basePath);
@@ -294,8 +325,48 @@ public static class DashboardEndpoints
             if (int.TryParse(ms, out var n) && n >= 0) retryDelay = TimeSpan.FromMilliseconds(n);
             else errors.Add("Retry delay must be a whole number of milliseconds, 0 or more.");
         }
-        return runAt is null && maxAttempts is null && retryDelay is null ? null : new JobOptions { RunAt = runAt, MaxAttempts = maxAttempts, RetryDelay = retryDelay };
+        TimeSpan? retryJitter = null;
+        if (Get("opt.retryJitterMs") is { } jms)
+        {
+            if (int.TryParse(jms, out var n) && n >= 0) retryJitter = TimeSpan.FromMilliseconds(n);
+            else errors.Add("Retry jitter must be a whole number of milliseconds, 0 or more.");
+        }
+        RetryBackoff? backoff = Get("opt.retryBackoff") switch
+        {
+            null => null,
+            "fixed" => RetryBackoff.Fixed,
+            "exponential" => RetryBackoff.Exponential,
+            var other => Invalid(errors, $"Retry backoff \"{other}\" is unknown; pick fixed or exponential."),
+        };
+        double? multiplier = null;
+        if (Get("opt.retryBackoffMultiplier") is { } mult)
+        {
+            if (double.TryParse(mult, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) && double.IsFinite(f) && f >= 1 && f <= 100) multiplier = f;
+            else errors.Add("Backoff multiplier must be a number from 1 to 100.");
+        }
+        TimeSpan? maxRetryDelay = null;
+        if (Get("opt.maxRetryDelayMs") is { } cms)
+        {
+            if (int.TryParse(cms, out var n) && n >= 0) maxRetryDelay = TimeSpan.FromMilliseconds(n);
+            else errors.Add("Max retry delay must be a whole number of milliseconds, 0 or more.");
+        }
+        if (runAt is null && maxAttempts is null && retryDelay is null && retryJitter is null && backoff is null && multiplier is null && maxRetryDelay is null)
+            return null;
+        return new JobOptions
+        {
+            RunAt = runAt, MaxAttempts = maxAttempts, RetryDelay = retryDelay, RetryJitter = retryJitter,
+            RetryBackoff = backoff, RetryBackoffMultiplier = multiplier, MaxRetryDelay = maxRetryDelay,
+        };
     }
+
+    private static RetryBackoff? Invalid(List<string> errors, string error)
+    {
+        errors.Add(error);
+        return null;
+    }
+
+    private static string BackoffOption(string value, string label, IFormCollection? posted) =>
+        $"<option value=\"{value}\"{((posted?["opt.retryBackoff"].LastOrDefault() ?? "") == value ? " selected" : "")}>{label}</option>";
 
     private sealed record Run(List<JobHistoryEntry> Events, List<JobAttempt> Attempts);
 
@@ -590,7 +661,7 @@ public static class DashboardEndpoints
         @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .callout{background:#2a1215;border-color:#7f1d1d;color:#fecaca}
         :root:not([data-theme=light]) .callout pre{background:rgb(0 0 0/.3);color:#fca5a5}}
         :root[data-theme=dark] .callout{background:#2a1215;border-color:#7f1d1d;color:#fecaca}:root[data-theme=dark] .callout pre{background:rgb(0 0 0/.3);color:#fca5a5}
-        .meta{margin-bottom:20px}.meta dl{display:flex;flex-wrap:wrap;margin:0}.meta dl>div{flex:1 1 120px;padding:12px 16px;border-left:1px solid var(--border)}
+        .children{margin-bottom:20px}.meta{margin-bottom:20px}.meta dl{display:flex;flex-wrap:wrap;margin:0}.meta dl>div{flex:1 1 120px;padding:12px 16px;border-left:1px solid var(--border)}
         .meta dl>div:first-child{border-left:0}dt{color:var(--muted-foreground);font-size:12px}dd{margin:2px 0 0;font-weight:500}
         .split{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start}@media (max-width:820px){.split{grid-template-columns:1fr}}
         .run{margin-bottom:12px;overflow:visible}.run summary{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px;cursor:pointer;list-style-position:inside}

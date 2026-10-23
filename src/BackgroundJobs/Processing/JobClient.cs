@@ -104,6 +104,12 @@ internal sealed class JobClient(
         return store.ListAsync(after, limit, descending, ct);
     }
 
+    public Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after = null, int limit = 100, CancellationToken ct = default)
+    {
+        if (limit is < 1 or > MaxPageSize) throw new ArgumentException($"limit is {limit}, but it must be from 1 to {MaxPageSize}; page through more with after", nameof(limit));
+        return store.ListContinuationsAsync(parentId, after, limit, ct);
+    }
+
     public Task DeleteAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Delete, ct);
 
     public Task RequeueAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Requeue, ct);

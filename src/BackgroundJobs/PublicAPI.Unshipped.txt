@@ -58,3 +58,14 @@ static BackgroundJobs.JobStateWire.ParseCondition(string! s) -> BackgroundJobs.C
 static BackgroundJobs.JobStateWire.ToWire(this BackgroundJobs.ContinuationCondition c) -> string!
 static BackgroundJobs.JobTransition.CreateContinuation(BackgroundJobs.JobState parent, BackgroundJobs.ContinuationCondition condition, bool scheduled) -> BackgroundJobs.JobTransition!
 static BackgroundJobs.JobTransition.ParentFinished(BackgroundJobs.JobState parent, BackgroundJobs.ContinuationCondition condition, bool scheduled) -> BackgroundJobs.JobTransition!
+BackgroundJobs.IJobClient.ListContinuationsAsync(System.Guid parentId, System.Guid? after = null, int limit = 100, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobSummary!>!>!
+BackgroundJobs.Job.MaxRetryDelay.get -> System.TimeSpan?
+BackgroundJobs.Job.MaxRetryDelay.init -> void
+BackgroundJobs.Job.RetryBackoff.get -> BackgroundJobs.RetryBackoff
+BackgroundJobs.Job.RetryBackoffMultiplier.get -> double
+BackgroundJobs.Job.RetryBackoffMultiplier.init -> void
+BackgroundJobs.Job.RetryJitter.get -> System.TimeSpan
+BackgroundJobs.Job.RetryJitter.init -> void
+BackgroundJobs.JobSummary.ContinueAfter.get -> System.Guid?
+BackgroundJobs.JobSummary.ContinueAfter.init -> void
+BackgroundJobs.Storage.IJobStore.ListContinuationsAsync(System.Guid parentId, System.Guid? after, int limit, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<BackgroundJobs.JobSummary!>!>!

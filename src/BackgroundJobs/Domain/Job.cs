@@ -16,7 +16,11 @@ namespace BackgroundJobs;
 /// <param name="Priority">Higher runs first within its queue.</param>
 public sealed record JobSummary(
     Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
-    string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority);
+    string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority)
+{
+    /// <summary>The parent job of a continuation (<see cref="JobOptions.ContinueAfter"/>); null otherwise.</summary>
+    public Guid? ContinueAfter { get; init; }
+}
 
 /// <summary>
 /// A job with its args, state history and attempts, as returned by <see cref="IJobClient.GetAsync"/>.
@@ -62,6 +66,21 @@ public sealed record Job(
 
     /// <summary>The continuation condition when <see cref="ContinueAfter"/> is set; null otherwise.</summary>
     public ContinuationCondition? Condition { get; init; }
+
+    /// <summary>Maximum random extra delay added to each retry (<see cref="JobOptions.RetryJitter"/>).</summary>
+    public TimeSpan RetryJitter { get; init; }
+
+    /// <summary>
+    /// How the retry delay grows: <see cref="BackgroundJobs.RetryBackoff.Exponential"/> when
+    /// <see cref="RetryBackoffMultiplier"/> is above 1, <see cref="BackgroundJobs.RetryBackoff.Fixed"/> otherwise.
+    /// </summary>
+    public RetryBackoff RetryBackoff => RetryBackoffMultiplier > 1 ? RetryBackoff.Exponential : RetryBackoff.Fixed;
+
+    /// <summary>Each retry delay is the previous one times this; 1 is a fixed delay.</summary>
+    public double RetryBackoffMultiplier { get; init; } = 1;
+
+    /// <summary>Cap on the backed-off retry delay, before jitter; null for no cap (always null for a fixed delay).</summary>
+    public TimeSpan? MaxRetryDelay { get; init; }
 }
 
 /// <summary>

@@ -237,6 +237,9 @@ await client.EnqueueAsync("cleanup", new CleanupArgs(file),
 - Retenção: só jobs finalizados são purgados, e um pai finalizado já não tem continuações `awaiting`; por isso o id do
   pai em `ContinueAfter` pode apontar para um job que não existe mais.
 - O health check não conta jobs `awaiting` como fila parada: eles não estão prontos.
+- Para ver os filhos de um job: `IJobClient.ListContinuationsAsync(parentId)` (paginado por id, em qualquer estado),
+  `GET /api/jobs/{id}/children` ou a tabela "Continuations" no detalhe do dashboard. `JobSummary.ContinueAfter` (e o campo
+  `continueAfter` da listagem HTTP) mostra o pai.
 
 ### Lote e enfileiramento transacional (outbox)
 
@@ -464,6 +467,8 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   em `enqueued`.
   `RegisterConsumerAsync` grava quais filas cada nó consome, com validade (num Redis, uma chave com TTL por nó e fila);
   `QueueStatsAsync` devolve uma entrada por fila com jobs prontos e se algum nó vivo a consome.
+  `ListContinuationsAsync` lista os jobs com um dado `ContinueAfter`, em qualquer estado, por id: mantenha-os indexados
+  pelo pai (no Postgres, `bj_jobs_continuations (continue_after, id)`, migration `013`).
 - **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via
   `IJobSignals`. As mudanças do próprio nó já acordam os loops pelo núcleo; sem listener, outros nós são vistos no polling.
 - Um método de extensão `UseXxx(this BackgroundJobsBuilder)` que faz `Services.Replace` de `IJobStore` e `IJobStoreListener`
@@ -482,8 +487,9 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 |---|---|---|
 | `GET /health` | `200 {"status":"ok"}` | `503 {"status":"unavailable"}` |
 | `GET /health/details` | `200` relatório (healthy/degraded) — ver [§10](#10-health-check-e-observabilidade) | `503` quando não está processando |
-| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts","queue","priority"}],"nextCursor":"<id>"\|null}` | `400` |
-| `GET /api/jobs/{id}` | `200` job completo | `404` |
+| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts","queue","priority","continueAfter"}],"nextCursor":"<id>"\|null}` | `400` |
+| `GET /api/jobs/{id}` | `200` job completo (inclusive `retryJitterMs`, `retryBackoff`, `retryBackoffMultiplier`, `maxRetryDelayMs`) | `404` |
+| `GET /api/jobs/{id}/children?after=<id>&limit=<1..1000>` | `200` continuações do job, no formato da listagem | `404` (id inválido), `400` |
 | `DELETE /api/jobs/{id}` | `200 {"id":"...","state":"deleted"}` | `404`, `409` |
 | `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` (estado não permite, ou a chave de idempotência está com outro job) |
 | `POST /api/jobs/{id}/cancel` | `202 {"jobId":"..."}` (um job em `processing` passa a `cancelled` quando seu código para) | `404`, `409` |
@@ -514,7 +520,7 @@ Coloque-as atrás de autenticação/rede interna conforme sua infraestrutura.
 Pacote `BackgroundJobs.Dashboard`. `app.MapBackgroundJobsDashboard(string prefix = "/jobs")` — UI HTML renderizada no servidor (sem JavaScript), com modo escuro.
 
 - `GET {prefix}/` — lista paginada (50 por página), filtro por estado, auto-refresh a cada 5 s (desligável com `?refresh=off`).
-- `GET {prefix}/{id}` — detalhes, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete/Cancel quando a transição é válida.
+- `GET {prefix}/{id}` — detalhes (inclusive retry delay, jitter e backoff), pai e continuações com links, histórico, tentativas com duração e erro, args em JSON; botões Requeue/Delete/Cancel quando a transição é válida.
 - `POST {prefix}/{id}/delete`, `POST {prefix}/{id}/requeue` e `POST {prefix}/{id}/cancel` — ações via formulário.
 - `GET {prefix}/new`, `GET {prefix}/new/{name}` e `POST {prefix}/new/{name}` — **disparo de jobs**: lista os jobs registrados, gera um formulário a partir do tipo de args e enfileira com as opções informadas. Quem acessa o dashboard consegue enfileirar qualquer job registrado.
 - `POST {prefix}/preferences` — tema e fuso horário do visitante, guardados em cookie.

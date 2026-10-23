@@ -32,6 +32,14 @@ public interface IJobClient
     Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default);
 
     /// <summary>
+    /// The continuations of <paramref name="parentId"/> (jobs enqueued with <see cref="JobOptions.ContinueAfter"/> set to it),
+    /// in any state, by id (creation order) ascending. Pass the last id seen as <paramref name="after"/> for the next page.
+    /// <paramref name="limit"/> is 1 to 1000. Empty when the job has none or does not exist (a purged parent's
+    /// continuations are still listed).
+    /// </summary>
+    Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after = null, int limit = 100, CancellationToken ct = default);
+
+    /// <summary>
     /// Deletes a scheduled or enqueued job before it runs. The job stays readable, as deleted, until retention purges it.
     /// </summary>
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>

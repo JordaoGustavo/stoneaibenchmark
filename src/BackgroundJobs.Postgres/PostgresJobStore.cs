@@ -139,6 +139,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         {
             ContinueAfter = row.ContinueAfter,
             Condition = row.ContinuationCondition == null ? null : JobStateWire.ParseCondition(row.ContinuationCondition),
+            RetryJitter = TimeSpan.FromMilliseconds(row.RetryJitterMs),
+            RetryBackoffMultiplier = row.RetryBackoffMultiplier,
+            MaxRetryDelay = row.MaxRetryDelayMs is { } cap ? TimeSpan.FromMilliseconds(cap) : null,
         };
     }
 
@@ -147,12 +150,26 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await using var conn = await db.OpenConnectionAsync(ct);
         var (op, dir) = descending ? ("<", "DESC") : (">", "ASC");
         var rows = await conn.QueryAsync<SummaryRow>($"""
-            SELECT id, name, state, attempts, run_at, created_at, updated_at, queue, priority FROM bj_jobs
+            SELECT {SummaryColumns} FROM bj_jobs
             WHERE @after::uuid IS NULL OR id {op} @after::uuid
             ORDER BY id {dir} LIMIT @limit
             """, new { after, limit });
-        return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority)).ToList();
+        return rows.Select(r => r.ToSummary()).ToList();
     }
+
+    public async Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after, int limit, CancellationToken ct)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        // Served by bj_jobs_continuations (migration 013).
+        var rows = await conn.QueryAsync<SummaryRow>($"""
+            SELECT {SummaryColumns} FROM bj_jobs
+            WHERE continue_after = @parentId AND (@after::uuid IS NULL OR id > @after::uuid)
+            ORDER BY id LIMIT @limit
+            """, new { parentId, after, limit });
+        return rows.Select(r => r.ToSummary()).ToList();
+    }
+
+    private const string SummaryColumns = "id, name, state, attempts, run_at, created_at, updated_at, queue, priority, continue_after";
 
     public async Task<DateTime?> NextRunAtAsync(CancellationToken ct)
     {
@@ -579,6 +596,9 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public int RefundedAttempts { get; set; }
         public int MaxAttempts { get; set; }
         public int RetryDelayMs { get; set; }
+        public int RetryJitterMs { get; set; }
+        public double RetryBackoffMultiplier { get; set; } = 1;
+        public int? MaxRetryDelayMs { get; set; }
         public DateTime? RunAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -660,6 +680,10 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public DateTime UpdatedAt { get; set; }
         public string Queue { get; set; } = "";
         public int Priority { get; set; }
+        public Guid? ContinueAfter { get; set; }
+
+        public JobSummary ToSummary() =>
+            new(Id, Name, JobStateWire.ParseState(State), Attempts, RunAt, CreatedAt, UpdatedAt, Queue, Priority) { ContinueAfter = ContinueAfter };
     }
 
     private sealed class AwaitingRow

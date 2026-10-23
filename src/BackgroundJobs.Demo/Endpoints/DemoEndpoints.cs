@@ -23,7 +23,7 @@ public static class DemoEndpoints
     private sealed record CreateJobOptions(
         DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null, string? IdempotencyKey = null,
         Guid? ContinueAfter = null, string? Condition = null,
-        string? RetryBackoff = null, double? RetryBackoffMultiplier = null, int? MaxRetryDelayMs = null);
+        string? RetryBackoff = null, double? RetryBackoffMultiplier = null, int? MaxRetryDelayMs = null, int? RetryJitterMs = null);
 
     /// Strict input: unknown fields, missing parameters, nulls and numbers-as-strings are rejected.
     private static readonly JsonSerializerOptions Strict = new(JsonSerializerDefaults.Web)
@@ -163,11 +163,13 @@ public static class DemoEndpoints
         if (o == null) return null;
         if (o.MaxAttempts is < 1 or > 10) throw new BadRequest("options.maxAttempts must be between 1 and 10");
         if (o.RetryDelayMs is < 0 or > 60_000) throw new BadRequest("options.retryDelayMs must be between 0 and 60000");
+        if (o.RetryJitterMs is < 0 or > 60_000) throw new BadRequest("options.retryJitterMs must be between 0 and 60000");
         return new JobOptions
         {
             RunAt = o.RunAt,
             MaxAttempts = o.MaxAttempts,
             RetryDelay = o.RetryDelayMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+            RetryJitter = o.RetryJitterMs is { } jitterMs ? TimeSpan.FromMilliseconds(jitterMs) : null,
             // Queue and priority are checked by the library (ArgumentException → 400).
             Queue = o.Queue,
             Priority = o.Priority,

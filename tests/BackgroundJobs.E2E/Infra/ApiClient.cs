@@ -9,7 +9,8 @@ public sealed record JobView(
     string Id, string Name, JsonElement Args, string State, int Attempts, int MaxAttempts, int RetryDelayMs,
     DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
     List<HistoryView> History, List<AttemptView> AttemptHistory, string Queue, int Priority, string? IdempotencyKey = null,
-    string? ContinueAfter = null, string? ContinuationCondition = null);
+    string? ContinueAfter = null, string? ContinuationCondition = null, int RetryJitterMs = 0, string RetryBackoff = "fixed",
+    double RetryBackoffMultiplier = 1, int? MaxRetryDelayMs = null);
 
 public sealed record HistoryView(string State, DateTime At, string Reason);
 

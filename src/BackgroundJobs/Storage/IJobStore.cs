@@ -242,6 +242,12 @@ public interface IJobStore
     Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, bool descending, CancellationToken ct);
 
     /// <summary>
+    /// The jobs whose <see cref="NewJob.ContinueAfter"/> is <paramref name="parentId"/>, in any state, by id ascending
+    /// after <paramref name="after"/>. Keep them indexed by parent so this reads only the parent's continuations.
+    /// </summary>
+    Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after, int limit, CancellationToken ct);
+
+    /// <summary>
     /// Earliest run_at among scheduled jobs, or null when none.
     /// </summary>
     Task<DateTime?> NextRunAtAsync(CancellationToken ct);

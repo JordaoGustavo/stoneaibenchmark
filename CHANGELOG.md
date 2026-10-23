@@ -40,6 +40,16 @@ entre versões menores.
   SPI de store: `NewJob`/`ClaimedJob` ganham `RetryBackoffMultiplier` (`1` = fixo) e `MaxRetryDelayMs`, que stores de
   terceiros precisam gravar no insert e devolver no claim.
 
+- Leitura das configurações de retry: `Job.RetryJitter`, `Job.RetryBackoff` (derivado), `Job.RetryBackoffMultiplier` e
+  `Job.MaxRetryDelay`; campos `retryJitterMs`, `retryBackoff`, `retryBackoffMultiplier` e `maxRetryDelayMs` no JSON de
+  `GET /api/jobs/{id}`; e no detalhe do dashboard. O formulário de enqueue do dashboard (`/jobs/new/{name}`) aceita
+  retry jitter, backoff, multiplicador e teto.
+- Listagem de continuações: `IJobClient.ListContinuationsAsync(parentId, after, limit)`, `GET /api/jobs/{id}/children`
+  e tabela de continuações no detalhe do dashboard. `JobSummary.ContinueAfter` e o campo `continueAfter` na listagem
+  HTTP mostram o pai; a lista do dashboard linka o pai. Migration `013_continuations_by_parent.sql` (índice
+  `bj_jobs_continuations`). SPI: novo método `IJobStore.ListContinuationsAsync`, que stores de terceiros precisam
+  implementar. `IJobClient` ganhou um método: implementações próprias da interface precisam adicioná-lo.
+
 ### Corrigido
 
 - Ids de jobs criados no mesmo milissegundo no mesmo processo agora seguem a ordem de criação (UUIDv7 com contador, RFC 9562 §6.2). Antes, `ListAsync` podia devolvê-los fora de ordem.

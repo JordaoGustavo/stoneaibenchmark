@@ -84,6 +84,7 @@ Singleton. Erros do banco propagam para quem chamou.
 | `Task<IReadOnlyList<Guid>> EnqueueManyAsync(IEnumerable<JobToEnqueue> jobs, CancellationToken ct = default)` | Enfileiramento em lote, **atômico** (todos ou nenhum), numa chamada ao store (no Postgres, um único `INSERT ... SELECT FROM unnest(...)`). Retorna os ids na ordem de entrada. Cada job é validado como no `EnqueueAsync` (inclusive backoff e continuação) antes de gravar qualquer coisa; o primeiro inválido lança `ArgumentException` com `jobs[i]` na mensagem e nada é criado. `IdempotencyKey` por job: chave em uso por job não finalizado, **ou por um job anterior do mesmo lote**, não cria nada e devolve o id do dono. Os jobs que entram em `enqueued` ficam na ordem do lote (FIFO). Continuações (`ContinueAfter`) têm a mesma semântica do `EnqueueAsync` (pai travado, decisão imediata se já finalizado); pai inexistente lança `JobNotFoundException` e **nada** do lote é criado. Lote vazio não grava nada |
 | `Task<Job> GetAsync(Guid id, CancellationToken ct = default)` | `JobNotFoundException` |
 | `Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default)` | Ordem de id (= criação), crescente a menos que `descending`. `after` = último id visto. `ArgumentException` se `limit` estiver fora de `1..1000` |
+| `Task<IReadOnlyList<JobSummary>> ListContinuationsAsync(Guid parentId, Guid? after = null, int limit = 100, CancellationToken ct = default)` | Continuações (filhos) do job `parentId`, isto é, jobs com `ContinueAfter = parentId`, em **qualquer estado**, em ordem crescente de id. `after` = último id visto. Lista vazia se o job não tem continuações ou não existe (as continuações de um pai já purgado continuam listadas). `ArgumentException` se `limit` estiver fora de `1..1000` |
 | `Task DeleteAsync(Guid id, CancellationToken ct = default)` | Só `scheduled`/`enqueued` → `deleted`. `JobNotFoundException`, `InvalidJobTransitionException` |
 | `Task RequeueAsync(Guid id, CancellationToken ct = default)` | Só estados finalizados → `enqueued`, tentativas zeradas, histórico mantido. `JobNotFoundException`, `InvalidJobTransitionException`, `IdempotencyKeyConflictException` |
 | `Task CancelAsync(Guid id, CancellationToken ct = default)` | `scheduled`/`enqueued` → `cancelled` na hora; `processing`: dispara o token (na hora neste nó, em até `LeaseDuration / 3` em outro) e termina em `cancelled`, a menos que o job conclua com sucesso. `JobNotFoundException`, `InvalidJobTransitionException` |
@@ -165,9 +166,16 @@ sealed record Job(Guid Id, string Name, JsonElement Args, int ArgsVersion, JobSt
 {
     Guid? ContinueAfter { get; init; }                 // pai da continuação; null para job comum
     ContinuationCondition? Condition { get; init; }    // condição da continuação; null para job comum
+    TimeSpan RetryJitter { get; init; }                // jitter máximo somado a cada retry
+    RetryBackoff RetryBackoff { get; }                 // Exponential se RetryBackoffMultiplier > 1, senão Fixed
+    double RetryBackoffMultiplier { get; init; }       // 1 = atraso fixo
+    TimeSpan? MaxRetryDelay { get; init; }             // teto do atraso exponencial; null = sem teto (sempre null com Fixed)
 }
 sealed record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt,
-    DateTime UpdatedAt, string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority);
+    DateTime UpdatedAt, string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority)
+{
+    Guid? ContinueAfter { get; init; }                 // pai da continuação; null para job comum
+}
 sealed record JobHistoryEntry(JobState State, DateTime At, string Reason);
 sealed record JobAttempt(int Attempt, DateTime StartedAt, DateTime? FinishedAt, AttemptOutcome? Outcome, string? Error);
 ```
@@ -301,7 +309,7 @@ comentários de `src/BackgroundJobs/Storage/IJobStore.cs` e é verificado por `t
 
 | Tipo | Papel |
 |---|---|
-| `interface IJobStore` | `MigrateAsync`, `InsertAsync`, `InsertManyAsync`, `GetAsync`, `ListAsync`, `NextRunAtAsync`, `PromoteDueAsync`, `ClaimAsync`, `RegisterConsumerAsync`, `FinishAsync`, `RenewLeasesAsync`, `CancelAsync`, `RecoverAsync`, `QueueStatsAsync`, `ApplyAsync`, `UpsertRecurringAsync`, `GetRecurringAsync`, `ListRecurringAsync`, `RemoveRecurringAsync`, `DueRecurringAsync`, `NextRecurringAtAsync`, `FireRecurringAsync`, `PurgeFinishedAsync` |
+| `interface IJobStore` | `MigrateAsync`, `InsertAsync`, `InsertManyAsync`, `GetAsync`, `ListAsync`, `ListContinuationsAsync`, `NextRunAtAsync`, `PromoteDueAsync`, `ClaimAsync`, `RegisterConsumerAsync`, `FinishAsync`, `RenewLeasesAsync`, `CancelAsync`, `RecoverAsync`, `QueueStatsAsync`, `ApplyAsync`, `UpsertRecurringAsync`, `GetRecurringAsync`, `ListRecurringAsync`, `RemoveRecurringAsync`, `DueRecurringAsync`, `NextRecurringAtAsync`, `FireRecurringAsync`, `PurgeFinishedAsync` |
 | `interface IJobStoreListener` | `Task RunAsync(CancellationToken ct)`: acorda os loops quando outro nó muda o store |
 | `interface IJobSignals` | `void JobsReady()`, `void SchedulesChanged()` |
 | `static class JobSignalsExtensions` | `void Entered(this IJobSignals, JobState)` |
@@ -354,8 +362,9 @@ criar jobs: o enqueue é feito pela aplicação via `IJobClient`. Não há auten
 |---|---|---|
 | `GET /health` | `200 {"status":"ok"}` | `503 {"status":"unavailable"}` |
 | `GET /health/details` | `200` (healthy ou degraded): `status`, `ready`, `queue{ready, oldestReadyAgeSeconds, stalled, stalledThresholdSeconds, sampledAt, queues[{name, consumed, orphaned, ready, oldestReadyAgeSeconds}]}`, `circuitBreakers[{job, state, consecutiveFailures, openUntil}]`, `abandoned{count, limit, full, alert, alertAfterSeconds, jobs[{id, name, since, ageSeconds}]}` | `503` com o mesmo corpo quando unhealthy |
-| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{id, name, state, attempts, queue, priority}], "nextCursor": "<id>"\|null}`. Ordem crescente de id, `limit` padrão 1000, `nextCursor` só com a página cheia | `400` (`after` não é Guid, `limit` fora da faixa) |
-| `GET /api/jobs/{id}` | `200 {id, name, args, state, attempts, maxAttempts, queue, priority, idempotencyKey, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state, at, reason}], attemptHistory[{attempt, startedAt, finishedAt, outcome, error}]}` | `404` |
+| `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{id, name, state, attempts, queue, priority, continueAfter}], "nextCursor": "<id>"\|null}`. Ordem crescente de id, `limit` padrão 1000, `nextCursor` só com a página cheia. `continueAfter` é o id do pai ou `null` | `400` (`after` não é Guid, `limit` fora da faixa) |
+| `GET /api/jobs/{id}` | `200 {id, name, args, state, attempts, maxAttempts, queue, priority, idempotencyKey, retryDelayMs, scheduledAt, createdAt, updatedAt, history[{state, at, reason}], attemptHistory[{attempt, startedAt, finishedAt, outcome, error}], continueAfter, continuationCondition, retryJitterMs, retryBackoff ("fixed"\|"exponential"), retryBackoffMultiplier, maxRetryDelayMs (null = sem teto)}` | `404` |
+| `GET /api/jobs/{id}/children?after=<id>&limit=<1..1000>` | Continuações do job (`ListContinuationsAsync`), em qualquer estado, mesmo formato e paginação de `GET /api/jobs`. Lista vazia se o job não tem continuações ou não existe | `404` (id não é Guid), `400` (`after`/`limit`) |
 | `DELETE /api/jobs/{id}` | `200 {"id","state":"deleted"}` | `404`, `409` |
 | `POST /api/jobs/{id}/requeue` | `202 {"jobId"}` | `404`, `409` (estado, ou chave de idempotência em uso) |
 | `POST /api/jobs/{id}/cancel` | `202 {"jobId"}` | `404`, `409` |
@@ -381,7 +390,7 @@ retornado. POSTs cross-site (`Sec-Fetch-Site`) recebem `403`.
 | Rota (sob `prefix`) | Função |
 |---|---|
 | `GET /` | Lista (50 por página, mais novos primeiro; `?state=`, `?after=`, `?dir=asc`, `?refresh=off`). `400` para estado desconhecido |
-| `GET /{id}` | Detalhe, histórico, tentativas, args |
+| `GET /{id}` | Detalhe (inclusive retry delay, jitter e backoff), link para o pai de uma continuação, tabela de continuações (até 50) com links, histórico, tentativas, args. Na lista, uma continuação mostra o link para o pai |
 | `POST /{id}/delete`, `/{id}/requeue`, `/{id}/cancel` | Ação e redirect para o detalhe com mensagem |
-| `GET /new`, `GET /new/{name}`, `POST /new/{name}` | Formulário gerado a partir do tipo de args para enfileirar um job registrado; `404` para nome não registrado |
+| `GET /new`, `GET /new/{name}`, `POST /new/{name}` | Formulário gerado a partir do tipo de args para enfileirar um job registrado, com opções `RunAt`, `MaxAttempts`, retry delay, retry jitter, backoff (`fixed`/`exponential`), multiplicador e teto do backoff; `404` para nome não registrado |
 | `POST /preferences` | Grava tema e fuso em cookies |

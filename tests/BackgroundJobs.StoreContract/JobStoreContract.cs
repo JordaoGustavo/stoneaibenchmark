@@ -187,6 +187,54 @@ public abstract class JobStoreContract : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Get_returns_the_retry_settings_the_job_was_inserted_with()
+    {
+        var fixedJob = New() with { RetryJitterMs = 250 };
+        var backedOff = New() with { RetryDelayMs = 2_000, RetryBackoffMultiplier = 3, MaxRetryDelayMs = 45_000 };
+        var uncapped = New() with { RetryBackoffMultiplier = 1.5 };
+        await _store.InsertManyAsync([fixedJob, backedOff, uncapped], Ct);
+
+        var f = await Get(fixedJob.Id);
+        Assert.Equal((TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(250), RetryBackoff.Fixed, 1d, (TimeSpan?)null),
+            (f.RetryDelay, f.RetryJitter, f.RetryBackoff, f.RetryBackoffMultiplier, f.MaxRetryDelay));
+        var b = await Get(backedOff.Id);
+        Assert.Equal((TimeSpan.FromSeconds(2), RetryBackoff.Exponential, 3d, (TimeSpan?)TimeSpan.FromSeconds(45)),
+            (b.RetryDelay, b.RetryBackoff, b.RetryBackoffMultiplier, b.MaxRetryDelay));
+        var u = await Get(uncapped.Id);
+        Assert.Equal((RetryBackoff.Exponential, 1.5, (TimeSpan?)null), (u.RetryBackoff, u.RetryBackoffMultiplier, u.MaxRetryDelay));
+    }
+
+    [Fact]
+    public async Task List_continuations_returns_a_parents_children_in_every_state_paged_by_id()
+    {
+        var parent = await Insert();
+        var other = await Insert();
+        var children = new List<Guid>();
+        for (var i = 0; i < 3; i++) children.Add(await Insert(continueAfter: parent, condition: ContinuationCondition.OnFinished));
+        var otherChild = await Insert(continueAfter: other);
+        children.Sort((a, b) => string.CompareOrdinal(a.ToString(), b.ToString()));
+
+        // Release them: listing covers children that no longer await.
+        var claimed = (await Claim(limit: 10, order: ClaimOrder.Fifo)).Single(c => c.Id == parent);
+        Assert.True(await Finish(claimed, JobTransition.Succeed, AttemptOutcome.Succeeded));
+
+        var first = await _store.ListContinuationsAsync(parent, null, 2, Ct);
+        Assert.Equal(children.Take(2), first.Select(j => j.Id));
+        Assert.All(first, j => Assert.Equal((parent, JobState.Enqueued), (j.ContinueAfter!.Value, j.State)));
+        var rest = await _store.ListContinuationsAsync(parent, first[^1].Id, 10, Ct);
+        Assert.Equal(children.Skip(2), rest.Select(j => j.Id));
+
+        Assert.Equal([otherChild], (await _store.ListContinuationsAsync(other, null, 10, Ct)).Select(j => j.Id));
+        Assert.Empty(await _store.ListContinuationsAsync(children[0], null, 10, Ct));
+        Assert.Empty(await _store.ListContinuationsAsync(Guid.CreateVersion7(), null, 10, Ct));
+
+        // The plain list carries the parent too.
+        var listed = (await _store.ListAsync(null, 10, false, Ct)).ToDictionary(j => j.Id);
+        Assert.Null(listed[parent].ContinueAfter);
+        Assert.Equal(other, listed[otherChild].ContinueAfter);
+    }
+
+    [Fact]
     public async Task InsertMany_keeps_the_retry_backoff_of_each_job()
     {
         var jobs = new[] { New(), New() with { RetryBackoffMultiplier = 3, MaxRetryDelayMs = 45_000 } };
