@@ -20,24 +20,25 @@ internal static class DashboardForms
 
     private sealed record Field(string JsonName, string Label, Type Type, Kind Kind, bool Required, object? Default);
 
-    public static string Render(Type argsType, IFormCollection? posted, TimeZoneInfo tz)
+    // scope prefixes input names and ids so several jobs' arguments can share one form (the chain builder).
+    public static string Render(Type argsType, IFormCollection? posted, TimeZoneInfo tz, string scope = "")
     {
         var fields = FieldsOf(argsType);
         var sb = new StringBuilder();
         if (fields.Count == 0) sb.Append("<p class=\"muted\">This job takes no arguments.</p>");
-        foreach (var f in fields) sb.Append(RenderField(f, posted, tz));
+        foreach (var f in fields) sb.Append(RenderField(f, posted, tz, scope));
         return sb.ToString();
     }
 
     /// <summary>
     /// Builds the args object from the posted form and checks it deserializes into the job's argument type.
     /// </summary>
-    public static JsonObject Parse(Type argsType, IFormCollection form, TimeZoneInfo tz, List<string> errors)
+    public static JsonObject Parse(Type argsType, IFormCollection form, TimeZoneInfo tz, List<string> errors, string scope = "")
     {
         var result = new JsonObject();
         foreach (var f in FieldsOf(argsType))
         {
-            var raw = form[ArgPrefix + f.JsonName].LastOrDefault()?.Trim() ?? "";
+            var raw = form[scope + ArgPrefix + f.JsonName].LastOrDefault()?.Trim() ?? "";
             if (raw.Length == 0)
             {
                 if (f.Kind == Kind.Bool) result[f.JsonName] = false;
@@ -81,11 +82,11 @@ internal static class DashboardForms
 
     public static string ZoneLabel(TimeZoneInfo tz) => tz.Id;
 
-    private static string RenderField(Field f, IFormCollection? posted, TimeZoneInfo tz)
+    private static string RenderField(Field f, IFormCollection? posted, TimeZoneInfo tz, string scope)
     {
-        var name = ArgPrefix + f.JsonName;
+        var name = scope + ArgPrefix + f.JsonName;
         var value = posted?[name].LastOrDefault() ?? FormatDefault(f, tz);
-        var id = "f-" + f.JsonName;
+        var id = "f-" + scope.Replace('.', '-') + f.JsonName;
         var req = f.Required ? " required" : "";
         var sb = new StringBuilder("<div class=\"field\">");
 

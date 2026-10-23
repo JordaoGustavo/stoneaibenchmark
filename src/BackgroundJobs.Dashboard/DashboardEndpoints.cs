@@ -11,7 +11,7 @@ namespace BackgroundJobs;
 /// <summary>
 /// The HTML dashboard (BackgroundJobs.Dashboard).
 /// </summary>
-public static class DashboardEndpoints
+public static partial class DashboardEndpoints
 {
     private const int PageSize = 50;
     private const int ScanBatch = 1000;
@@ -105,24 +105,32 @@ public static class DashboardEndpoints
             return Page(http, 200, "Jobs", body.ToString(), basePath, autoRefresh);
         });
 
-        group.MapGet("/new", (HttpContext http, JobRegistry registry) =>
+        group.MapGet("/new", async (HttpContext http, JobRegistry registry, IJobClient client, string? after, CancellationToken ct) =>
         {
+            // ?after=<id> carries "chain the new job to this one" through the picker to the form.
+            var parent = await FindParentAsync(client, after, ct);
+            var suffix = parent is null ? "" : $"?after={parent.Id}";
             var body = new StringBuilder();
-            body.Append("<a class=\"back\" href=\"").Append(basePath).Append("\">&larr; All jobs</a>")
-                .Append("<div class=\"head\"><div><h1>Trigger a job</h1><p class=\"muted\">Pick a registered job type to enqueue.</p></div></div>");
+            body.Append("<a class=\"back\" href=\"").Append(parent is null ? basePath : $"{basePath}/{parent.Id}").Append("\">&larr; ")
+                .Append(parent is null ? "All jobs" : "Back to job").Append("</a>")
+                .Append("<div class=\"head\"><div><h1>").Append(parent is null ? "Trigger a job" : "Add a continuation").Append("</h1><p class=\"muted\">")
+                .Append(parent is null ? "Pick a registered job type to enqueue." : "Pick the job type that should run after this one.")
+                .Append("</p></div><div class=\"actions\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/chain").Append(suffix)
+                .Append("\">").Append(ChainIcon).Append("Build a chain</a></div></div>");
+            if (parent != null) body.Append(ParentBanner(basePath, parent));
             var jobs = registry.Registrations;
             if (jobs.Count == 0) body.Append("<div class=\"card pad empty\">No job types are registered.</div>");
             body.Append("<div class=\"picker\">");
             foreach (var (name, argsType) in jobs)
-                body.Append("<a class=\"card pad pick\" href=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append("\"><b>")
+                body.Append("<a class=\"card pad pick\" href=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append(suffix).Append("\"><b>")
                     .Append(E(name)).Append("</b><span class=\"mono muted\">").Append(E(argsType.Name)).Append("</span></a>");
             body.Append("</div>");
-            return Page(http, 200, "Trigger a job", body.ToString(), basePath);
+            return Page(http, 200, parent is null ? "Trigger a job" : "Add a continuation", body.ToString(), basePath);
         });
 
-        group.MapGet("/new/{name}", (HttpContext http, JobRegistry registry, string name) =>
+        group.MapGet("/new/{name}", async (HttpContext http, JobRegistry registry, IJobClient client, string name, string? after, CancellationToken ct) =>
             registry.Registrations.Any(r => r.Name == name)
-                ? TriggerPage(http, basePath, registry, name, null, [])
+                ? await TriggerPage(http, basePath, registry, client, name, null, [], after, ct)
                 : Page(http, 404, "Not found", BackToTrigger(basePath) + Alert($"No job type named \"{name}\" is registered."), basePath));
 
         group.MapPost("/new/{name}", async (HttpContext http, JobRegistry registry, IJobClient client, string name, CancellationToken ct) =>
@@ -136,11 +144,15 @@ public static class DashboardEndpoints
             var tz = Zone(http);
             var args = DashboardForms.Parse(reg.ArgsType, form, tz, errors);
             var options = ParseOptions(form, tz, errors);
-            if (errors.Count > 0) return TriggerPage(http, basePath, registry, name, form, errors);
+            var (parentId, condition) = await ParseRunAfterAsync(client, form, "after.", errors, ct);
+            if (errors.Count > 0) return await TriggerPage(http, basePath, registry, client, name, form, errors, null, ct);
+            if (parentId != null) options = (options ?? new JobOptions()) with { ContinueAfter = parentId, Condition = condition };
 
             Guid id;
             try { id = await client.EnqueueAsync(name, args, options, ct); }
-            catch (ArgumentException e) { return TriggerPage(http, basePath, registry, name, form, [e.Message]); }
+            catch (ArgumentException e) { return await TriggerPage(http, basePath, registry, client, name, form, [e.Message], null, ct); }
+            // The parent can be purged between the check above and the insert.
+            catch (JobNotFoundException) { return await TriggerPage(http, basePath, registry, client, name, form, [$"Run after: job {parentId} no longer exists."], null, ct); }
             return Results.Redirect($"{basePath}/{id}?msg={Uri.EscapeDataString("Job enqueued.")}");
         });
 
@@ -159,6 +171,7 @@ public static class DashboardEndpoints
             body.Append("<a class=\"back\" href=\"").Append(basePath).Append("\">&larr; All jobs</a>");
             body.Append("<div class=\"head\"><div><h1>").Append(E(job.Name)).Append(' ').Append(Badge(job.State))
                 .Append("</h1><p class=\"mono muted\">").Append(job.Id).Append("</p></div><div class=\"actions\">");
+            body.Append("<a class=\"btn outline\" href=\"").Append(basePath).Append("/new?after=").Append(job.Id).Append("\">").Append(ChainIcon).Append("Add continuation</a>");
             if (job.State.CanRequeue())
                 body.Append(ActionForm($"{basePath}/{job.Id}/requeue", "Requeue", "btn"));
             if (job.State.CanDelete())
@@ -207,6 +220,13 @@ public static class DashboardEndpoints
                     body.Append("<tr><td colspan=\"4\" class=\"empty\">Showing the first ").Append(ChildrenShown).Append("; list the rest with GET /api/jobs/{id}/children.</td></tr>");
                 body.Append("</tbody></table></div>");
             }
+            else
+                body.Append("<div class=\"card pad nochildren\"><div><b>No continuations</b><p class=\"muted\">")
+                    .Append(terminal
+                        ? "This job has finished: a continuation added now is decided at once, running right away or being cancelled by its condition."
+                        : "Chain jobs to this one: they wait in <b>awaiting</b> and start when it finishes.")
+                    .Append("</p></div><div class=\"actions\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/chain?after=").Append(job.Id)
+                    .Append("\">Build a chain</a><a class=\"btn\" href=\"").Append(basePath).Append("/new?after=").Append(job.Id).Append("\">Add continuation</a></div></div>");
 
             body.Append("<div class=\"split\"><section><h2>Timeline</h2>");
             for (var i = runs.Count - 1; i >= 0; i--)
@@ -225,6 +245,7 @@ public static class DashboardEndpoints
         group.MapPost("/{id}/cancel", (HttpContext http, IJobClient client, string id, CancellationToken ct) =>
             RunAction(http, basePath, id, jobId => client.CancelAsync(jobId, ct), "Cancel requested."));
 
+        MapChainBuilder(group, basePath);
         return group;
     }
 
@@ -272,8 +293,11 @@ public static class DashboardEndpoints
 
     private static string BackToTrigger(string basePath) => $"<a class=\"back\" href=\"{basePath}/new\">&larr; All job types</a>";
 
-    private static IResult TriggerPage(HttpContext http, string basePath, JobRegistry registry, string name, IFormCollection? posted, List<string> errors)
+    private static async Task<IResult> TriggerPage(HttpContext http, string basePath, JobRegistry registry, IJobClient client, string name,
+        IFormCollection? posted, List<string> errors, string? after, CancellationToken ct)
     {
+        var afterValue = posted?["after.id"].LastOrDefault() ?? after ?? "";
+        var parent = await FindParentAsync(client, afterValue, ct);
         var argsType = registry.Registrations.First(r => r.Name == name).ArgsType;
         string Posted(string key) => E(posted?[key].LastOrDefault() ?? "");
         var body = new StringBuilder(BackToTrigger(basePath));
@@ -284,6 +308,7 @@ public static class DashboardEndpoints
 
         body.Append("<form class=\"card pad form\" method=\"post\" action=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append("\">")
             .Append("<fieldset><legend>Arguments</legend>").Append(DashboardForms.Render(argsType, posted, Zone(http))).Append("</fieldset>")
+            .Append(RunAfterSection(basePath, "after.", afterValue, parent, posted?["after.condition"].LastOrDefault()))
             .Append("<details class=\"opts\"><summary>Options</summary><p class=\"muted\">Leave blank to use the server defaults.</p><div class=\"row\">")
             .Append("<div class=\"field\"><label for=\"o-runAt\">Run at <span class=\"muted\">(").Append(E(DashboardForms.ZoneLabel(Zone(http)))).Append(")</span></label><input type=\"datetime-local\" step=\"1\" id=\"o-runAt\" name=\"opt.runAt\" value=\"").Append(Posted("opt.runAt")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-max\">Max attempts</label><input type=\"number\" min=\"1\" step=\"1\" id=\"o-max\" name=\"opt.maxAttempts\" value=\"").Append(Posted("opt.maxAttempts")).Append("\"></div>")
@@ -296,7 +321,7 @@ public static class DashboardEndpoints
             .Append("<div class=\"field\"><label for=\"o-mult\">Backoff multiplier</label><input type=\"number\" min=\"1\" max=\"100\" step=\"any\" id=\"o-mult\" name=\"opt.retryBackoffMultiplier\" value=\"").Append(Posted("opt.retryBackoffMultiplier")).Append("\"></div>")
             .Append("<div class=\"field\"><label for=\"o-cap\">Max retry delay (ms)</label><input type=\"number\" min=\"0\" step=\"1\" id=\"o-cap\" name=\"opt.maxRetryDelayMs\" value=\"").Append(Posted("opt.maxRetryDelayMs")).Append("\"></div>")
             .Append("</div></details><div class=\"actions end\"><a class=\"btn outline\" href=\"").Append(basePath).Append("/new\">Cancel</a>")
-            .Append("<button class=\"btn\" type=\"submit\">Enqueue job</button></div></form>");
+            .Append("<button class=\"btn\" type=\"submit\">").Append(parent is null ? "Enqueue job" : "Enqueue continuation").Append("</button></div></form>");
         return Page(http, errors.Count > 0 ? 400 : 200, name, body.ToString(), basePath);
     }
 
@@ -690,5 +715,5 @@ public static class DashboardEndpoints
         .check{display:flex;gap:8px;align-items:center}.hint{color:var(--muted-foreground);margin:0;font-size:11px}
         .opts summary{cursor:pointer;font-weight:600}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:12px}
         .actions.end{justify-content:flex-end}.alert ul{margin:6px 0 0;padding-left:18px}
-        """;
+        """ + ChainCss;
 }

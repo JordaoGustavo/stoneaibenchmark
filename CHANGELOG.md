@@ -18,6 +18,9 @@ entre versões menores.
 
 ### Adicionado
 
+- Dashboard: jobs encadeados. Seção "Run after" no formulário de disparo (id do pai validado + condição), botão
+  "Add continuation" no detalhe do job (`/new?after={id}`) e construtor de cadeia em `/jobs/chain` (passos A → B → C
+  com args e condição, reordenáveis, validados antes de enfileirar qualquer passo). Funciona sem JavaScript.
 - Continuações: `JobOptions.ContinueAfter` (id do job pai) e `JobOptions.Condition` (`ContinuationCondition.OnSucceeded`,
   padrão, ou `OnFinished`). O job espera no novo estado `JobState.Awaiting` e, na mesma transação em que o pai finaliza,
   é enfileirado (ou agendado, se o `RunAt` ainda estiver no futuro) ou cancelado (`continuation_condition_not_met`) se a
