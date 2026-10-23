@@ -195,5 +195,6 @@ internal sealed class JobExecutor(
     private static DateTime? RetryAt(ClaimedJob job, DateTime finishedAt) =>
         job.CountedAttempts >= job.MaxAttempts
             ? null
-            : finishedAt.AddMilliseconds(job.RetryDelayMs + (job.RetryJitterMs > 0 ? Random.Shared.Next(job.RetryJitterMs + 1) : 0));
+            : finishedAt.AddMilliseconds(
+                BackoffSettings.DelayMs(job.RetryDelayMs, job.RetryBackoffMultiplier, job.MaxRetryDelayMs, job.CountedAttempts) + (job.RetryJitterMs > 0 ? Random.Shared.Next(job.RetryJitterMs + 1) : 0));
 }

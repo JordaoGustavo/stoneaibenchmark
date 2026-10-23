@@ -69,7 +69,10 @@ internal sealed class Scheduler(
                     logger.LogError(e, "recurring job {Id} cannot be scheduled on this node", definition.Id);
                     continue;
                 }
-                var job = definition.NewJob(now);
+                // Definitions do not store a backoff; their jobs take the server default.
+                var defaults = options.Value;
+                var backoff = BackoffSettings.Resolve(defaults, null, null, null);
+                var job = definition.NewJob(now) with { RetryBackoffMultiplier = backoff.Multiplier, MaxRetryDelayMs = backoff.MaxDelayMs };
                 if (await store.FireRecurringAsync(new RecurringFire(definition, definition.NextRunAt, next, job), ct) == RecurringFireResult.Fired)
                     signals.Entered(job.Creation.To);
             }

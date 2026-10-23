@@ -26,6 +26,16 @@ public sealed record NewJob(
     /// Whether the job starts scheduled (RunAt in the future) or enqueued.
     /// </summary>
     public JobTransition Creation => JobTransition.Create(RunAt > Now);
+
+    /// <summary>
+    /// Each retry delay is the previous one times this; 1 (the default) is a fixed delay.
+    /// </summary>
+    public double RetryBackoffMultiplier { get; init; } = 1;
+
+    /// <summary>
+    /// Cap on the retry delay before jitter when <see cref="RetryBackoffMultiplier"/> is above 1; null for no cap.
+    /// </summary>
+    public int? MaxRetryDelayMs { get; init; }
 }
 
 /// <summary>
@@ -39,6 +49,16 @@ public sealed record ClaimedJob(
     /// Attempts that count against MaxAttempts, this one included.
     /// </summary>
     public int CountedAttempts => Attempt - RefundedAttempts;
+
+    /// <summary>
+    /// As stored from <see cref="NewJob.RetryBackoffMultiplier"/>.
+    /// </summary>
+    public double RetryBackoffMultiplier { get; init; } = 1;
+
+    /// <summary>
+    /// As stored from <see cref="NewJob.MaxRetryDelayMs"/>.
+    /// </summary>
+    public int? MaxRetryDelayMs { get; init; }
 }
 
 /// <summary>

@@ -15,6 +15,7 @@ internal sealed class JobClient(
         var o = jobOptions;
         JobOptions.CheckIdempotencyKey(o?.IdempotencyKey);
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
+        var backoff = BackoffSettings.Resolve(options.Value, o?.RetryBackoff, o?.RetryBackoffMultiplier, o?.MaxRetryDelay);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
         var registration = registry.Find(jobName);
@@ -24,7 +25,10 @@ internal sealed class JobClient(
         var id = JobIds.Next(now);
         var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
-            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey);
+            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey)
+        {
+            RetryBackoffMultiplier = backoff.Multiplier, MaxRetryDelayMs = backoff.MaxDelayMs,
+        };
         var stored = await store.InsertAsync(job, ct);
         if (stored == id) signals.Entered(job.Creation.To);
         return stored;

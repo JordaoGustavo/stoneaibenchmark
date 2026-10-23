@@ -1,3 +1,26 @@
 #nullable enable
 BackgroundJobs.Storage.ClaimRequest.Names.get -> System.Collections.Generic.IReadOnlyCollection<string!>?
 BackgroundJobs.Storage.ClaimRequest.Names.init -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultMaxRetryDelay.get -> System.TimeSpan
+BackgroundJobs.BackgroundJobsOptions.DefaultMaxRetryDelay.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryBackoff.get -> BackgroundJobs.RetryBackoff
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryBackoff.set -> void
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryBackoffMultiplier.get -> double
+BackgroundJobs.BackgroundJobsOptions.DefaultRetryBackoffMultiplier.set -> void
+BackgroundJobs.JobOptions.MaxRetryDelay.get -> System.TimeSpan?
+BackgroundJobs.JobOptions.MaxRetryDelay.init -> void
+BackgroundJobs.JobOptions.RetryBackoff.get -> BackgroundJobs.RetryBackoff?
+BackgroundJobs.JobOptions.RetryBackoff.init -> void
+BackgroundJobs.JobOptions.RetryBackoffMultiplier.get -> double?
+BackgroundJobs.JobOptions.RetryBackoffMultiplier.init -> void
+BackgroundJobs.RetryBackoff
+BackgroundJobs.RetryBackoff.Exponential = 1 -> BackgroundJobs.RetryBackoff
+BackgroundJobs.RetryBackoff.Fixed = 0 -> BackgroundJobs.RetryBackoff
+BackgroundJobs.Storage.ClaimedJob.MaxRetryDelayMs.get -> int?
+BackgroundJobs.Storage.ClaimedJob.MaxRetryDelayMs.init -> void
+BackgroundJobs.Storage.ClaimedJob.RetryBackoffMultiplier.get -> double
+BackgroundJobs.Storage.ClaimedJob.RetryBackoffMultiplier.init -> void
+BackgroundJobs.Storage.NewJob.MaxRetryDelayMs.get -> int?
+BackgroundJobs.Storage.NewJob.MaxRetryDelayMs.init -> void
+BackgroundJobs.Storage.NewJob.RetryBackoffMultiplier.get -> double
+BackgroundJobs.Storage.NewJob.RetryBackoffMultiplier.init -> void

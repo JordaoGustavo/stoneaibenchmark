@@ -188,8 +188,11 @@ Campos não informados usam os padrões de `BackgroundJobsOptions`.
 |---|---|
 | `RunAt` (`DateTimeOffset?`) | Não executar antes desse instante. Nulo ou no passado = agora |
 | `MaxAttempts` (`int?`) | Total de execuções, incluindo a primeira (≥ 1) |
-| `RetryDelay` (`TimeSpan?`) | Espera fixa entre tentativas (≥ 0) |
+| `RetryDelay` (`TimeSpan?`) | Espera entre tentativas (≥ 0); com backoff exponencial, a espera do primeiro retry |
 | `RetryJitter` (`TimeSpan?`) | Atraso aleatório extra em `[0, RetryJitter]` somado a cada retry |
+| `RetryBackoff` (`RetryBackoff?`) | `Fixed` (padrão) ou `Exponential`. Exponencial: o retry após a n-ª tentativa contada espera `RetryDelay * RetryBackoffMultiplier^(n-1)`, limitado a `MaxRetryDelay`, mais o jitter |
+| `RetryBackoffMultiplier` (`double?`) | Fator do backoff exponencial, de `1` a `100` (padrão global `2`) |
+| `MaxRetryDelay` (`TimeSpan?`) | Teto da espera exponencial antes do jitter; `Timeout.InfiniteTimeSpan` = sem teto (padrão) |
 | `Queue` (`string?`) | Fila do job (padrão `"default"`). 1–64 caracteres `a-z`, `0-9`, `-`, `_`, `.`, começando por letra ou dígito (`JobQueues.IsValidName`) |
 | `Priority` (`int?`) | Maior roda primeiro dentro da fila; de `-100` a `100`, padrão `0` (`JobQueues`) |
 | `IdempotencyKey` (`string?`) | Deduplicação: enquanto um job com essa chave não terminou (`scheduled`, `enqueued`, `processing`), enfileirar a mesma chave retorna o id dele sem criar outro (nome, args e opções da nova chamada são ignorados), mesmo com chamadas concorrentes em vários nós. Depois que ele termina (`succeeded`, `failed`, `deleted`, `cancelled`) a chave fica livre. Até 200 caracteres, não vazia |
@@ -277,6 +280,9 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `DefaultMaxAttempts` | `3` | Padrão de `JobOptions.MaxAttempts` |
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |
+| `DefaultRetryBackoff` | `Fixed` | Padrão de `JobOptions.RetryBackoff`; também usado pelos jobs que recorrentes criam |
+| `DefaultRetryBackoffMultiplier` | `2` | Padrão de `JobOptions.RetryBackoffMultiplier` (1 a 100) |
+| `DefaultMaxRetryDelay` | `Timeout.InfiniteTimeSpan` | Padrão de `JobOptions.MaxRetryDelay` |
 | `DefaultJobTimeout` | `Timeout.InfiniteTimeSpan` | Tempo máximo de uma tentativa; `JobRegistrationOptions.Timeout` sobrescreve por tipo |
 | `TimeoutGracePeriod` | `5s` | Após timeout ou cancelamento, quanto um job que ignora o token segura o worker |
 | `MaxAbandonedJobs` | `4` | Máximo de jobs rodando sem worker depois da folga; acima disso seguram o worker |
@@ -543,7 +549,9 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 
 - **Entrega at-least-once:** um job pode executar mais de uma vez (crash, ou banco indisponível por mais que `LeaseDuration` durante a execução). **Escreva jobs idempotentes.**
 - **Cancelamento cooperativo:** .NET não mata threads; um job que ignora o token continua rodando (sem worker, até `MaxAbandonedJobs`) até voltar, e atrasa o shutdown até `ShutdownTimeout`. Depois de um `ShutdownTimeout`, outro nó pode rodar o job enquanto este processo ainda encerra.
-- **Retry fixo**, sem backoff exponencial nativo (use `RetryJitter` para espalhar).
+- **Retry fixo por padrão.** Backoff exponencial é opt-in (`RetryBackoff.Exponential`), global ou por job; não há
+  configuração por registro nem por definição recorrente (os jobs de recorrentes usam o padrão global). As opções são
+  gravadas com o job no enqueue: mudar o padrão global não afeta jobs já enfileirados.
 - **Fila e prioridade são fixas** depois do enqueue. A garantia contra starvation é uma fração dos claims (`FifoClaimEvery`), não aging.
 - **Circuit breaker de job** é por processo, não compartilhado entre nós.
 - Mantenha os args pequenos (são `jsonb` e voltam em toda consulta de detalhe).

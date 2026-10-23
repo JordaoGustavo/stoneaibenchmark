@@ -39,6 +39,7 @@ internal sealed class InMemoryJobStore : IJobStore
         {
             Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
             MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
+            RetryBackoffMultiplier = job.RetryBackoffMultiplier, MaxRetryDelayMs = job.MaxRetryDelayMs,
             CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority, IdempotencyKey = job.IdempotencyKey,
         };
         Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
@@ -126,7 +127,10 @@ internal sealed class InMemoryJobStore : IJobStore
                 var attempt = new AttemptRow(Guid.CreateVersion7(), r.Run, r.Attempts, now);
                 r.AttemptLog.Add(attempt);
                 return new ClaimedJob(r.Id, r.Name, r.ArgsJson, r.ArgsVersion, r.Attempts, r.MaxAttempts, r.RetryDelayMs,
-                    r.RetryJitterMs, r.Version, attempt.Id, r.Run, r.RefundedAttempts);
+                    r.RetryJitterMs, r.Version, attempt.Id, r.Run, r.RefundedAttempts)
+                {
+                    RetryBackoffMultiplier = r.RetryBackoffMultiplier, MaxRetryDelayMs = r.MaxRetryDelayMs,
+                };
             }).ToList();
             return Task.FromResult(claimed);
         }
@@ -351,6 +355,8 @@ internal sealed class InMemoryJobStore : IJobStore
         public int MaxAttempts { get; init; }
         public int RetryDelayMs { get; init; }
         public int RetryJitterMs { get; init; }
+        public double RetryBackoffMultiplier { get; init; } = 1;
+        public int? MaxRetryDelayMs { get; init; }
         public DateTime? RunAt { get; set; }
         public DateTime? EnqueuedAt { get; set; }
         public long EnqueueSeq { get; set; }

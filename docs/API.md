@@ -80,7 +80,7 @@ Singleton. Erros do banco propagam para quem chamou.
 
 | Membro | Contrato |
 |---|---|
-| `Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? options = null, CancellationToken ct = default)` | Persiste e retorna o id (UUIDv7). `RunAt` futuro → `scheduled`; senão `enqueued`. Nome desconhecido é **aceito**; só nós que registraram o nome fazem claim dele, então o job fica em `enqueued` (sem gastar tentativas, fila aparece parada no health) até subir um nó que o registre. Com `IdempotencyKey` em uso por job não finalizado, não cria nada e retorna o id dele. `ArgumentException`: nome vazio, chave em branco ou com mais de 200 caracteres, `MaxAttempts < 1`, `RetryDelay`/`RetryJitter` negativos ou acima de `int.MaxValue` ms, fila inválida, prioridade fora de `-100..100`, args de tipo diferente do registrado (`JsonElement`/`JsonNode` são aceitos) |
+| `Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? options = null, CancellationToken ct = default)` | Persiste e retorna o id (UUIDv7). `RunAt` futuro → `scheduled`; senão `enqueued`. Nome desconhecido é **aceito**; só nós que registraram o nome fazem claim dele, então o job fica em `enqueued` (sem gastar tentativas, fila aparece parada no health) até subir um nó que o registre. Com `IdempotencyKey` em uso por job não finalizado, não cria nada e retorna o id dele. `ArgumentException`: nome vazio, chave em branco ou com mais de 200 caracteres, `MaxAttempts < 1`, `RetryDelay`/`RetryJitter` negativos ou acima de `int.MaxValue` ms, `RetryBackoff` fora do enum, `RetryBackoffMultiplier` fora de `1..100`, `MaxRetryDelay` inválido, fila inválida, prioridade fora de `-100..100`, args de tipo diferente do registrado (`JsonElement`/`JsonNode` são aceitos) |
 | `Task<Job> GetAsync(Guid id, CancellationToken ct = default)` | `JobNotFoundException` |
 | `Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after = null, int limit = 100, bool descending = false, CancellationToken ct = default)` | Ordem de id (= criação), crescente a menos que `descending`. `after` = último id visto. `ArgumentException` se `limit` estiver fora de `1..1000` |
 | `Task DeleteAsync(Guid id, CancellationToken ct = default)` | Só `scheduled`/`enqueued` → `deleted`. `JobNotFoundException`, `InvalidJobTransitionException` |
@@ -97,8 +97,11 @@ Campos `null` usam os padrões de `BackgroundJobsOptions`.
 |---|---|
 | `DateTimeOffset? RunAt { get; init; }` | Não antes deste instante. Nulo ou no passado = agora |
 | `int? MaxAttempts { get; init; }` | Execuções no total, incluindo a primeira; ≥ 1 |
-| `TimeSpan? RetryDelay { get; init; }` | Atraso fixo entre tentativas; ≥ 0 |
+| `TimeSpan? RetryDelay { get; init; }` | Atraso entre tentativas (com backoff exponencial, o do primeiro retry); ≥ 0 |
 | `TimeSpan? RetryJitter { get; init; }` | Atraso extra aleatório em `[0, RetryJitter]` por retry; ≥ 0 |
+| `RetryBackoff? RetryBackoff { get; init; }` | `Fixed` (padrão) ou `Exponential`: o retry após a n-ª tentativa contada espera `RetryDelay * RetryBackoffMultiplier^(n-1)`, limitado a `MaxRetryDelay`, + jitter |
+| `double? RetryBackoffMultiplier { get; init; }` | Fator do backoff exponencial; finito, de `1` a `100`. Ignorado com `Fixed` |
+| `TimeSpan? MaxRetryDelay { get; init; }` | Teto do atraso exponencial (antes do jitter); `0..int.MaxValue` ms ou `Timeout.InfiniteTimeSpan` (sem teto). Ignorado com `Fixed` |
 | `string? Queue { get; init; }` | Padrão `JobQueues.Default`. Veja `JobQueues.IsValidName` |
 | `int? Priority { get; init; }` | `-100..100`, padrão `0`; maior roda primeiro na fila |
 | `string? IdempotencyKey { get; init; }` | Deduplica enquanto o job com a chave não finalizou. Não pode ser em branco |
@@ -122,6 +125,9 @@ Campos `null` usam os padrões de `BackgroundJobsOptions`.
 | `int DefaultMaxAttempts` | `3` | |
 | `TimeSpan DefaultRetryDelay` | `1 s` | |
 | `TimeSpan DefaultRetryJitter` | `0` | |
+| `RetryBackoff DefaultRetryBackoff` | `Fixed` | `Fixed` ou `Exponential`. Também vale para jobs criados por recorrentes |
+| `double DefaultRetryBackoffMultiplier` | `2` | Finito, de `1` a `100` |
+| `TimeSpan DefaultMaxRetryDelay` | `Timeout.InfiniteTimeSpan` | `0..int.MaxValue` ms, ou infinito (sem teto) |
 | `TimeSpan DefaultJobTimeout` | `Timeout.InfiniteTimeSpan` | Positivo ou infinito |
 | `TimeSpan TimeoutGracePeriod` | `5 s` | ≥ 0 |
 | `int MaxAbandonedJobs` | `4` | ≥ 0 |
@@ -279,8 +285,8 @@ comentários de `src/BackgroundJobs/Storage/IJobStore.cs` e é verificado por `t
 | `interface IJobStoreListener` | `Task RunAsync(CancellationToken ct)`: acorda os loops quando outro nó muda o store |
 | `interface IJobSignals` | `void JobsReady()`, `void SchedulesChanged()` |
 | `static class JobSignalsExtensions` | `void Entered(this IJobSignals, JobState)` |
-| `sealed record NewJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now, string Queue, int Priority, string? IdempotencyKey = null)` | `JobTransition Creation` |
-| `sealed record ClaimedJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, int Version, Guid AttemptId, int Run, int RefundedAttempts)` | `int CountedAttempts` |
+| `sealed record NewJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now, string Queue, int Priority, string? IdempotencyKey = null)` | `JobTransition Creation`; `double RetryBackoffMultiplier { init; }` (padrão `1` = fixo), `int? MaxRetryDelayMs { init; }` (null = sem teto) |
+| `sealed record ClaimedJob(Guid Id, string Name, string ArgsJson, int ArgsVersion, int Attempt, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, int Version, Guid AttemptId, int Run, int RefundedAttempts)` | `int CountedAttempts`; `RetryBackoffMultiplier`, `MaxRetryDelayMs` como gravados no insert |
 | `sealed record ClaimRequest(string Queue, ClaimOrder Order, string NodeId, DateTime Now, TimeSpan LeaseDuration, int Limit, IReadOnlyCollection<string> ExcludedNames, IReadOnlyDictionary<string, int> ConcurrencyLimits)` | |
 | `enum ClaimOrder { Priority, Fifo }` | |
 | `sealed record LeaseRenewal(IReadOnlyCollection<Guid> Renewed, IReadOnlyCollection<Guid> CancelRequested)` | |

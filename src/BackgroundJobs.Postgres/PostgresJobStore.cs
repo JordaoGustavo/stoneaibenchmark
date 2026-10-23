@@ -76,17 +76,18 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         // conflicting insert is lost, which only leaves a gap in the FIFO tie-breaker.
         var inserted = await conn.ExecuteAsync($"""
             INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
-                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority, idempotency_key)
+                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority, idempotency_key,
+                                 retry_backoff_multiplier, max_retry_delay_ms)
             VALUES (@Id, @Name, @ArgsJson::jsonb, @ArgsVersion, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
                     @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority,
-                    @IdempotencyKey)
+                    @IdempotencyKey, @RetryBackoffMultiplier, @MaxRetryDelayMs)
             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL AND {KeyHeld} DO NOTHING
             """,
             new
             {
                 job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = creation.To.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
-                job.Queue, job.Priority, job.IdempotencyKey,
+                job.Queue, job.Priority, job.IdempotencyKey, job.RetryBackoffMultiplier, job.MaxRetryDelayMs,
             }, tx);
         if (inserted == 0) return false;
         await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
@@ -195,7 +196,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             var wanted = request.Limit - claimed.Count;
             // One statement: claim, attempts++, open attempts, history. The lease is measured on the database's clock (see
             // IJobStore.RecoverAsync).
-            var pass = (await conn.QueryAsync<ClaimedJob>($"""
+            var pass = (await conn.QueryAsync<ClaimRow>($"""
                 WITH locked AS (
                     SELECT id, name, priority, enqueued_at, enqueue_seq FROM bj_jobs
                     WHERE queue = @queue AND state = 'enqueued' AND NOT (name = ANY(@excluded)){onlyNames}
@@ -221,7 +222,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                     SELECT id, @to, @now, @reason FROM claimed
                 )
                 SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
-                       version, attempt_id, run, refunded_attempts
+                       version, attempt_id, run, refunded_attempts, retry_backoff_multiplier, max_retry_delay_ms
                 FROM claimed
                 ORDER BY {order}
                 """,
@@ -232,7 +233,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                     excluded = request.ExcludedNames.Concat(atLimit).ToArray(), names = request.Names?.ToArray() ?? [],
                     limitNames = belowLimit.Select(f => f.Key).ToArray(), limitFree = belowLimit.Select(f => f.Value).ToArray(),
                     to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason,
-                }, tx)).AsList();
+                }, tx)).Select(r => r.ToClaimedJob()).ToList();
 
             claimed.AddRange(pass);
             foreach (var job in pass)
@@ -533,6 +534,30 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public DateTime? RunAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+    }
+
+    private sealed class ClaimRow
+    {
+        public Guid Id { get; set; }
+        public string Name { get; set; } = "";
+        public string ArgsJson { get; set; } = "";
+        public int ArgsVersion { get; set; }
+        public int Attempt { get; set; }
+        public int MaxAttempts { get; set; }
+        public int RetryDelayMs { get; set; }
+        public int RetryJitterMs { get; set; }
+        public int Version { get; set; }
+        public Guid AttemptId { get; set; }
+        public int Run { get; set; }
+        public int RefundedAttempts { get; set; }
+        public double RetryBackoffMultiplier { get; set; } = 1;
+        public int? MaxRetryDelayMs { get; set; }
+
+        public ClaimedJob ToClaimedJob() => new(
+            Id, Name, ArgsJson, ArgsVersion, Attempt, MaxAttempts, RetryDelayMs, RetryJitterMs, Version, AttemptId, Run, RefundedAttempts)
+        {
+            RetryBackoffMultiplier = RetryBackoffMultiplier, MaxRetryDelayMs = MaxRetryDelayMs,
+        };
     }
 
     private sealed class RecurringRow
