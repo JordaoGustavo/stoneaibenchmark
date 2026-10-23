@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-internal sealed class JobClient(IJobStore store, JobRegistry registry, Signals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
+internal sealed class JobClient(IJobStore store, JobRegistry registry, IJobSignals signals, IOptions<BackgroundJobsOptions> options, TimeProvider time) : IJobClient
 {
     public const int MaxPageSize = 1000;
 
@@ -25,11 +25,11 @@ internal sealed class JobClient(IJobStore store, JobRegistry registry, Signals s
 
         var now = time.UtcNow();
         var id = Guid.CreateVersion7(now);
-        await store.InsertAsync(new NewJob(
+        var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, maxAttempts,
-            (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now), ct);
-        if (jobOptions?.RunAt?.UtcDateTime > now) signals.Scheduler.Set();
-        else signals.Dispatcher.Set();
+            (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now);
+        await store.InsertAsync(job, ct);
+        signals.Entered(job.Creation.To);
         return id;
     }
 
@@ -42,11 +42,13 @@ internal sealed class JobClient(IJobStore store, JobRegistry registry, Signals s
         return store.ListAsync(after, limit, ct);
     }
 
-    public Task DeleteAsync(Guid id, CancellationToken ct = default) => store.DeleteAsync(id, time.UtcNow(), ct);
+    public Task DeleteAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Delete, ct);
 
-    public async Task RequeueAsync(Guid id, CancellationToken ct = default)
+    public Task RequeueAsync(Guid id, CancellationToken ct = default) => ApplyAsync(id, JobTransition.Requeue, ct);
+
+    private async Task ApplyAsync(Guid id, JobTransition transition, CancellationToken ct)
     {
-        await store.RequeueAsync(id, time.UtcNow(), ct);
-        signals.Dispatcher.Set();
+        await store.ApplyAsync(id, transition, time.UtcNow(), ct);
+        signals.Entered(transition.To);
     }
 }

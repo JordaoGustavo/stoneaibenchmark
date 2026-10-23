@@ -5,10 +5,11 @@ namespace BackgroundJobs.E2E.Scenarios;
 [Collection(E2ECollection.Name)]
 public sealed class S01_EnqueueSucceeds(PostgresFixture pg)
 {
-    [Fact]
-    public async Task Enqueued_job_runs_to_succeeded_with_history_and_attempt()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Enqueued_job_runs_to_succeeded_with_history_and_attempt(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
 
         var id = await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 0 });
         var job = await demo.Api.WaitForStateAsync(id, "succeeded");

@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="../BackgroundJobs.AspNetCore/BackgroundJobs.AspNetCore.csproj" />
     <ProjectReference Include="../BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
+    <ProjectReference Include="../BackgroundJobs.Postgres/BackgroundJobs.Postgres.csproj" />
   </ItemGroup>
 </Project>

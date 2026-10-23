@@ -2,10 +2,10 @@
 using BackgroundJobs;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddBackgroundJobs(
-    o => o.ConnectionString = Environment.GetEnvironmentVariable("DATABASE_URL")
-                              ?? "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs",
-    jobs => jobs.Register<GreetJob, GreetArgs>("greet"));
+builder.Services
+    .AddBackgroundJobs(registerJobs: jobs => jobs.Register<GreetJob, GreetArgs>("greet"))
+    .UsePostgres(Environment.GetEnvironmentVariable("DATABASE_URL")
+                 ?? "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs");
 
 var host = builder.Build();
 await host.StartAsync();

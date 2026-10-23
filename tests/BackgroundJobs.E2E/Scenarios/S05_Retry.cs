@@ -5,10 +5,11 @@ namespace BackgroundJobs.E2E.Scenarios;
 [Collection(E2ECollection.Name)]
 public sealed class S05_Retry(PostgresFixture pg)
 {
-    [Fact]
-    public async Task Fails_twice_then_succeeds_respecting_the_retry_delay()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Fails_twice_then_succeeds_respecting_the_retry_delay(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
 
         var id = await demo.Api.EnqueueAsync("fail-n-times", new { failTimes = 2 }, new { maxAttempts = 3, retryDelayMs = 500 });
         var job = await demo.Api.WaitForStateAsync(id, "succeeded");

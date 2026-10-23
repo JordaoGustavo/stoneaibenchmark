@@ -4,14 +4,9 @@
     <RootNamespace>BackgroundJobs</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <!-- No ASP.NET Core: HTTP lives in BackgroundJobs.AspNetCore and BackgroundJobs.Dashboard. -->
+    <!-- No ASP.NET Core and no database driver: HTTP and stores live in their own packages. -->
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
-    <PackageReference Include="Npgsql" />
-    <PackageReference Include="Dapper" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="Storage/Postgres/Migrations/*.sql" />
   </ItemGroup>
 </Project>

@@ -7,10 +7,11 @@ public sealed class S02_Scheduling(PostgresFixture pg)
 {
     private static readonly TimeSpan StartTolerance = TimeSpan.FromSeconds(2);
 
-    [Fact]
-    public async Task Future_job_waits_for_runAt_and_past_job_runs_immediately()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Future_job_waits_for_runAt_and_past_job_runs_immediately(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
 
         var runAt = DateTime.UtcNow.AddSeconds(3);
         var future = await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 0 }, new { runAt });

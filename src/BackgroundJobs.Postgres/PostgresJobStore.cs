@@ -1,8 +1,9 @@
 using System.Text.Json;
 using Dapper;
+using BackgroundJobs.Storage;
 using Npgsql;
 
-namespace BackgroundJobs.Storage.Postgres;
+namespace BackgroundJobs.Postgres;
 
 internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 {
@@ -30,8 +31,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
     public async Task InsertAsync(NewJob job, CancellationToken ct)
     {
-        var scheduled = job.RunAt > job.Now;
-        var state = scheduled ? JobState.Scheduled : JobState.Enqueued;
+        var creation = job.Creation;
+        var scheduled = creation.To == JobState.Scheduled;
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         await conn.ExecuteAsync("""
@@ -42,11 +43,11 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             """,
             new
             {
-                job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = state.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
+                job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = creation.To.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
             }, tx);
-        await InsertHistoryAsync(conn, tx, job.Id, state, job.Now, scheduled ? Reasons.ScheduledAtCreation : Reasons.Created);
-        await NotifyAsync(conn, tx, scheduled ? JobNotifications.Scheduled : JobNotifications.Enqueued);
+        await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
+        await NotifyAsync(conn, tx, creation.To);
         await tx.CommitAsync(ct);
     }
 
@@ -88,21 +89,22 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
 
     public async Task<int> PromoteDueAsync(DateTime now, CancellationToken ct)
     {
+        var t = JobTransition.Promote;
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var promoted = await conn.ExecuteAsync("""
             WITH due AS (
-                SELECT id FROM bj_jobs WHERE state = 'scheduled' AND run_at <= @now
+                SELECT id FROM bj_jobs WHERE state = ANY(@from) AND run_at <= @now
                 ORDER BY run_at, id FOR UPDATE SKIP LOCKED
             ), promoted AS (
-                UPDATE bj_jobs j SET state = 'enqueued', run_at = NULL, enqueued_at = @now,
+                UPDATE bj_jobs j SET state = @to, run_at = NULL, enqueued_at = @now,
                        enqueue_seq = nextval('bj_enqueue_seq'), version = j.version + 1, updated_at = @now
                 FROM due WHERE j.id = due.id
                 RETURNING j.id
             )
-            INSERT INTO bj_history (job_id, state, at, reason) SELECT id, 'enqueued', @now, @reason FROM promoted
-            """, new { now, reason = Reasons.BecameDue }, tx);
-        if (promoted > 0) await NotifyAsync(conn, tx, JobNotifications.Enqueued);
+            INSERT INTO bj_history (job_id, state, at, reason) SELECT id, @to, @now, @reason FROM promoted
+            """, new { now, from = Wire(t.From), to = t.To.ToWire(), reason = t.Reason }, tx);
+        if (promoted > 0) await NotifyAsync(conn, tx, t.To);
         await tx.CommitAsync(ct);
         return promoted;
     }
@@ -114,13 +116,13 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         var rows = await conn.QueryAsync<ClaimedJob>("""
             WITH locked AS (
                 SELECT id, enqueued_at, enqueue_seq FROM bj_jobs
-                WHERE state = 'enqueued' AND NOT (name = ANY(@excluded))
+                WHERE state = ANY(@from) AND NOT (name = ANY(@excluded))
                 ORDER BY enqueued_at, enqueue_seq
                 LIMIT @limit FOR UPDATE SKIP LOCKED
             ), next AS (
                 SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY enqueued_at, enqueue_seq)] AS attempt_id FROM locked
             ), claimed AS (
-                UPDATE bj_jobs j SET state = 'processing', attempts = j.attempts + 1, version = j.version + 1,
+                UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
                        updated_at = @now, locked_by = @nodeId, lease_expires_at = @leaseUntil
                 FROM next WHERE j.id = next.id
                 RETURNING j.*, next.attempt_id
@@ -129,14 +131,15 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
                 SELECT attempt_id, id, run, attempts, @now FROM claimed
             ), history AS (
                 INSERT INTO bj_history (job_id, state, at, reason)
-                SELECT id, 'processing', @now, @reason FROM claimed
+                SELECT id, @to, @now, @reason FROM claimed
             )
             SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
                    version, attempt_id, run
             FROM claimed
             ORDER BY enqueued_at, enqueue_seq
             """,
-            new { nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(), reason = Reasons.Claimed });
+            new { nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(),
+                from = Wire(JobTransition.Claim.From), to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason });
         return rows.AsList();
     }
 
@@ -147,25 +150,15 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             "SELECT count(*) AS ready, min(enqueued_at) AS oldest_ready_at FROM bj_jobs WHERE state = 'enqueued'");
     }
 
-    public Task<bool> SucceedAsync(ClaimedJob job, string nodeId, DateTime finishedAt, CancellationToken ct) =>
-        FinishAsync(job, AttemptOutcome.Succeeded, null,
-            new Transition(job.Id, job.Version, Transitions.Finish, JobState.Succeeded, Reasons.Succeeded, finishedAt, LockedBy: nodeId), ct);
-
-    public Task<bool> FailAsync(ClaimedJob job, string nodeId, string error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct) =>
-        FinishAsync(job, AttemptOutcome.Failed, error,
-            retryAt is null
-                ? new Transition(job.Id, job.Version, Transitions.Finish, JobState.Failed, Reasons.MaxAttemptsExhausted, finishedAt, LockedBy: nodeId)
-                : new Transition(job.Id, job.Version, Transitions.Finish, JobState.Scheduled, Reasons.RetryScheduled, finishedAt, RunAt: retryAt, LockedBy: nodeId),
-            ct);
-
-    private async Task<bool> FinishAsync(ClaimedJob job, AttemptOutcome outcome, string? error, Transition transition, CancellationToken ct)
+    public async Task<bool> FinishAsync(
+        ClaimedJob job, string nodeId, JobTransition transition, AttemptOutcome outcome, string? error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
-        if (!await TransitionAsync(conn, tx, transition)) return false;
+        if (!await TransitionAsync(conn, tx, job.Id, job.Version, transition, finishedAt, retryAt, nodeId)) return false;
         await conn.ExecuteAsync(
             "UPDATE bj_attempts SET finished_at = @at, outcome = @outcome, error = @error WHERE id = @id",
-            new { at = transition.Now, outcome = outcome.ToWire(), error, id = job.AttemptId }, tx);
+            new { at = finishedAt, outcome = outcome.ToWire(), error, id = job.AttemptId }, tx);
         await tx.CommitAsync(ct);
         return true;
     }
@@ -194,63 +187,55 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             await conn.ExecuteAsync(
                 "UPDATE bj_attempts SET finished_at = @now, outcome = 'interrupted' WHERE job_id = @id AND run = @run AND finished_at IS NULL",
                 new { now, job.Id, job.Run }, tx);
-            var exhausted = job.Attempts >= job.MaxAttempts;
-            await TransitionAsync(conn, tx, new Transition(job.Id, job.Version, Transitions.Finish,
-                exhausted ? JobState.Failed : JobState.Enqueued,
-                exhausted ? Reasons.MaxAttemptsExhausted : Reasons.RecoveredAfterCrash, now));
+            await TransitionAsync(conn, tx, job.Id, job.Version, JobTransition.Recover(job.Attempts, job.MaxAttempts), now);
         }
         await tx.CommitAsync(ct);
         return stale.Count;
     }
 
-    public Task DeleteAsync(Guid id, DateTime now, CancellationToken ct) =>
-        UserTransitionAsync(id, "delete", v => new Transition(id, v, Transitions.Delete, JobState.Deleted, Reasons.DeletedByUser, now), ct);
-
-    public Task RequeueAsync(Guid id, DateTime now, CancellationToken ct) =>
-        UserTransitionAsync(id, "requeue", v => new Transition(id, v, Transitions.Requeue, JobState.Enqueued, Reasons.RequeuedByUser, now, ResetAttempts: true), ct);
-
-    private async Task UserTransitionAsync(Guid id, string operation, Func<int, Transition> transition, CancellationToken ct)
+    public async Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         var current = await conn.QuerySingleOrDefaultAsync<(string State, int Version)?>(
             "SELECT state, version FROM bj_jobs WHERE id = @id", new { id }, tx);
         if (current is null) throw new JobNotFoundException(id);
-        if (!await TransitionAsync(conn, tx, transition(current.Value.Version)))
-            throw new InvalidJobTransitionException(id, JobStateWire.ParseState(current.Value.State), operation);
+        if (!await TransitionAsync(conn, tx, id, current.Value.Version, transition, now))
+            throw new InvalidJobTransitionException(id, JobStateWire.ParseState(current.Value.State), transition.Operation);
         await tx.CommitAsync(ct);
     }
 
-    private sealed record Transition(
-        Guid Id, int Version, JobState[] From, JobState To, string Reason, DateTime Now,
-        DateTime? RunAt = null, bool ResetAttempts = false, string? LockedBy = null);
-
-    /// The single place that changes a job's state: guarded by version and source state, always writes history.
-    private static async Task<bool> TransitionAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Transition t)
+    /// The shared mechanics of IJobStore for one job: guarded by version, source state and owner; always writes history.
+    private static async Task<bool> TransitionAsync(
+        NpgsqlConnection conn, NpgsqlTransaction tx, Guid id, int version, JobTransition t, DateTime now, DateTime? runAt = null, string? lockedBy = null)
     {
         var changed = await conn.ExecuteAsync("""
             UPDATE bj_jobs SET
-                state = @to, version = version + 1, updated_at = @Now, run_at = @RunAt::timestamptz,
-                enqueued_at = CASE WHEN @to = 'enqueued' THEN @Now ELSE enqueued_at END,
+                state = @to, version = version + 1, updated_at = @now,
+                run_at = CASE WHEN @to = 'scheduled' THEN @runAt::timestamptz END,
+                enqueued_at = CASE WHEN @to = 'enqueued' THEN @now ELSE enqueued_at END,
                 enqueue_seq = CASE WHEN @to = 'enqueued' THEN nextval('bj_enqueue_seq') ELSE enqueue_seq END,
-                attempts = CASE WHEN @ResetAttempts THEN 0 ELSE attempts END,
-                run = CASE WHEN @ResetAttempts THEN run + 1 ELSE run END,
+                attempts = CASE WHEN @resetAttempts THEN 0 ELSE attempts END,
+                run = CASE WHEN @resetAttempts THEN run + 1 ELSE run END,
                 locked_by = NULL, lease_expires_at = NULL
-            WHERE id = @Id AND version = @Version AND state = ANY(@from)
-              AND (@LockedBy::text IS NULL OR locked_by = @LockedBy::text)
+            WHERE id = @id AND version = @version AND state = ANY(@from)
+              AND (@lockedBy::text IS NULL OR locked_by = @lockedBy::text)
             """,
-            new { t.Id, t.Version, from = t.From.Select(s => s.ToWire()).ToArray(), to = t.To.ToWire(), t.Now, t.RunAt, t.ResetAttempts, t.LockedBy },
+            new { id, version, from = Wire(t.From), to = t.To.ToWire(), now, runAt, resetAttempts = t.ResetAttempts, lockedBy },
             tx);
         if (changed == 0) return false;
-        await InsertHistoryAsync(conn, tx, t.Id, t.To, t.Now, t.Reason);
-        if (t.To is JobState.Enqueued or JobState.Scheduled)
-            await NotifyAsync(conn, tx, t.To == JobState.Enqueued ? JobNotifications.Enqueued : JobNotifications.Scheduled);
+        await InsertHistoryAsync(conn, tx, id, t.To, now, t.Reason);
+        await NotifyAsync(conn, tx, t.To);
         return true;
     }
 
+    private static string[] Wire(IEnumerable<JobState> states) => states.Select(s => s.ToWire()).ToArray();
+
     /// Delivered on commit; Postgres folds identical notifications within a transaction.
-    private static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, string payload) =>
-        conn.ExecuteAsync("SELECT pg_notify(@channel, @payload)", new { channel = JobNotifications.Channel, payload }, tx);
+    private static Task NotifyAsync(NpgsqlConnection conn, NpgsqlTransaction tx, JobState entered) =>
+        entered is JobState.Enqueued or JobState.Scheduled
+            ? conn.ExecuteAsync("SELECT pg_notify(@channel, @payload)", new { channel = JobNotifications.Channel, payload = entered.ToWire() }, tx)
+            : Task.CompletedTask;
 
     private static Task InsertHistoryAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid id, JobState state, DateTime at, string reason) =>
         conn.ExecuteAsync("INSERT INTO bj_history (job_id, state, at, reason) VALUES (@id, @state, @at, @reason)",

@@ -13,6 +13,7 @@ internal sealed class JobExecutor(
     JobRegistry registry,
     JobCircuitBreaker jobBreaker,
     JobsMetrics metrics,
+    IJobSignals signals,
     IServiceScopeFactory scopes,
     IOptions<BackgroundJobsOptions> options,
     TimeProvider time,
@@ -44,10 +45,12 @@ internal sealed class JobExecutor(
         var finishedAt = time.UtcNow();
         try
         {
-            var recorded = error == null
-                ? await store.SucceedAsync(job, options.Value.NodeId, finishedAt, CancellationToken.None)
-                : await store.FailAsync(job, options.Value.NodeId, error, finishedAt, RetryAt(job, finishedAt), CancellationToken.None);
-            if (!recorded) logger.LogWarning("job {JobId} was taken away from this node before it finished", job.Id);
+            var retryAt = error == null ? null : RetryAt(job, finishedAt);
+            var transition = error == null ? JobTransition.Succeed : JobTransition.Fail(retry: retryAt != null);
+            var outcome = error == null ? AttemptOutcome.Succeeded : AttemptOutcome.Failed;
+            var recorded = await store.FinishAsync(job, options.Value.NodeId, transition, outcome, error, finishedAt, retryAt, CancellationToken.None);
+            if (recorded) signals.Entered(transition.To);
+            else logger.LogWarning("job {JobId} was taken away from this node before it finished", job.Id);
         }
         catch (Exception e)
         {

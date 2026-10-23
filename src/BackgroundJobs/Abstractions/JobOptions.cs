@@ -17,19 +17,6 @@ public sealed record JobOptions
 
 public sealed class BackgroundJobsOptions
 {
-    /// Npgsql connection string of the Postgres store. Required unless <see cref="UseInMemoryStorage"/> was called.
-    public string ConnectionString { get; set; } = "";
-
-    internal bool InMemory { get; private set; }
-
-    /// Keeps jobs in this process instead of Postgres: for tests and local runs of code that integrates the library.
-    /// Everything is lost when the process exits and nodes share nothing, so never use it in production.
-    public BackgroundJobsOptions UseInMemoryStorage()
-    {
-        InMemory = true;
-        return this;
-    }
-
     public int WorkerCount { get; set; } = 4;
 
     /// Identifies this process as lease owner. Restarting with the same id recovers its jobs immediately.
@@ -56,7 +43,6 @@ public sealed class BackgroundJobsOptions
 
     internal void Validate()
     {
-        if (!InMemory && string.IsNullOrWhiteSpace(ConnectionString)) throw new ArgumentException("ConnectionString is required");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
         if (ClaimBatchSize < 1) throw new ArgumentException("ClaimBatchSize must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");

@@ -22,21 +22,21 @@ var failBreaker = int.TryParse(Env("FAIL_BREAKER_THRESHOLD", ""), out var thresh
     : null;
 // Which "greet" code this process runs: 1 = before its args changed, 2 = today.
 var greetVersion = int.Parse(Env("GREET_ARGS_VERSION", "2"));
-builder.Services.AddBackgroundJobs(
+var jobs = builder.Services.AddBackgroundJobs(
     o =>
     {
-        if (Env("STORAGE", "postgres") == "memory") o.UseInMemoryStorage();
-        else o.ConnectionString = ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs"));
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
         o.NodeId = Env("NODE_ID", Environment.MachineName);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
         o.StalledQueueThreshold = TimeSpan.FromSeconds(double.Parse(Env("STALLED_QUEUE_SECONDS", "60"), System.Globalization.CultureInfo.InvariantCulture));
     },
-    jobs => jobs
+    registry => registry
         .Register<SucceedAfterJob, SucceedAfterArgs>(SucceedAfterJob.Name)
         .Register<FailNTimesJob, FailNTimesArgs>(FailNTimesJob.Name, o => o.CircuitBreaker = failBreaker)
         .Register<LogMessageJob, LogMessageArgs>(LogMessageJob.Name)
         .RegisterGreet(greetVersion));
+if (Env("STORAGE", "postgres") == "memory") jobs.UseInMemoryStorage();
+else jobs.UsePostgres(ToConnectionString(Env("DATABASE_URL", "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs")));
 
 var app = builder.Build();
 app.MapBackgroundJobsApi();

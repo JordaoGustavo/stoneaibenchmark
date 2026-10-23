@@ -1,11 +1,10 @@
 using System.Text.Json;
-using BackgroundJobs.Processing;
 
 namespace BackgroundJobs.Storage.InMemory;
 
-/// IJobStore kept in this process: same transitions, history and FIFO order as the Postgres store, one lock instead
-/// of row locks. Instead of LISTEN/NOTIFY it wakes the local loops directly.
-internal sealed class InMemoryJobStore(Signals signals) : IJobStore
+/// IJobStore kept in this process, one lock instead of row locks. Rules come from JobTransition; this class only
+/// implements the shared mechanics described on IJobStore.
+internal sealed class InMemoryJobStore : IJobStore
 {
     private readonly Lock _lock = new();
     private readonly Dictionary<Guid, Row> _jobs = [];
@@ -15,21 +14,18 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
 
     public Task InsertAsync(NewJob job, CancellationToken ct)
     {
-        var scheduled = job.RunAt > job.Now;
+        var creation = job.Creation;
         lock (_lock)
         {
             var row = new Row
             {
                 Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
                 MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
-                CreatedAt = job.Now, UpdatedAt = job.Now,
+                CreatedAt = job.Now,
             };
-            if (scheduled) { row.State = JobState.Scheduled; row.RunAt = job.RunAt; }
-            else Enqueue(row, job.Now);
-            row.History.Add(new JobHistoryEntry(row.State, job.Now, scheduled ? Reasons.ScheduledAtCreation : Reasons.Created));
+            Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
             _jobs.Add(job.Id, row);
         }
-        Notify(scheduled ? JobState.Scheduled : JobState.Enqueued);
         return Task.CompletedTask;
     }
 
@@ -49,14 +45,12 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
     {
         lock (_lock)
         {
-            // Ordinal order of the text form is Postgres' uuid order.
             var cursor = after?.ToString();
             IReadOnlyList<JobSummary> page = _jobs.Values
-                .Select(r => (Key: r.Id.ToString(), Row: r))
-                .Where(x => cursor == null || string.CompareOrdinal(x.Key, cursor) > 0)
-                .OrderBy(x => x.Key, StringComparer.Ordinal)
+                .Where(r => cursor == null || string.CompareOrdinal(r.Key, cursor) > 0)
+                .OrderBy(r => r.Key, StringComparer.Ordinal)
                 .Take(limit)
-                .Select(x => new JobSummary(x.Row.Id, x.Row.Name, x.Row.State, x.Row.Attempts, x.Row.RunAt, x.Row.CreatedAt, x.Row.UpdatedAt))
+                .Select(r => new JobSummary(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt))
                 .ToList();
             return Task.FromResult(page);
         }
@@ -73,19 +67,11 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
         int promoted;
         lock (_lock)
         {
-            var due = _jobs.Values.Where(r => r.State == JobState.Scheduled && r.RunAt <= now)
-                .OrderBy(r => r.RunAt).ThenBy(r => r.Id.ToString(), StringComparer.Ordinal).ToList();
-            foreach (var r in due)
-            {
-                r.RunAt = null;
-                Enqueue(r, now);
-                r.Version++;
-                r.UpdatedAt = now;
-                r.History.Add(new JobHistoryEntry(JobState.Enqueued, now, Reasons.BecameDue));
-            }
+            var due = _jobs.Values.Where(r => JobTransition.Promote.Allows(r.State) && r.RunAt <= now)
+                .OrderBy(r => r.RunAt).ThenBy(r => r.Key, StringComparer.Ordinal).ToList();
+            foreach (var r in due) Apply(r, JobTransition.Promote, r.Version, null, now);
             promoted = due.Count;
         }
-        if (promoted > 0) Notify(JobState.Enqueued);
         return Task.FromResult(promoted);
     }
 
@@ -94,52 +80,36 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
     {
         lock (_lock)
         {
-            IReadOnlyList<ClaimedJob> claimed = _jobs.Values
-                .Where(r => r.State == JobState.Enqueued && !excludedNames.Contains(r.Name))
+            var ready = _jobs.Values
+                .Where(r => JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name))
                 .OrderBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
                 .Take(limit)
-                .ToList()
-                .Select(r =>
-                {
-                    r.State = JobState.Processing;
-                    r.Attempts++;
-                    r.Version++;
-                    r.UpdatedAt = now;
-                    r.LockedBy = nodeId;
-                    r.LeaseExpiresAt = leaseUntil;
-                    var attempt = new AttemptRow(Guid.CreateVersion7(), r.Run, r.Attempts, now);
-                    r.AttemptLog.Add(attempt);
-                    r.History.Add(new JobHistoryEntry(JobState.Processing, now, Reasons.Claimed));
-                    return new ClaimedJob(r.Id, r.Name, r.ArgsJson, r.ArgsVersion, r.Attempts, r.MaxAttempts, r.RetryDelayMs,
-                        r.RetryJitterMs, r.Version, attempt.Id, r.Run);
-                })
                 .ToList();
+            IReadOnlyList<ClaimedJob> claimed = ready.Select(r =>
+            {
+                Apply(r, JobTransition.Claim, r.Version, null, now);
+                r.Attempts++;
+                r.LockedBy = nodeId;
+                r.LeaseExpiresAt = leaseUntil;
+                var attempt = new AttemptRow(Guid.CreateVersion7(), r.Run, r.Attempts, now);
+                r.AttemptLog.Add(attempt);
+                return new ClaimedJob(r.Id, r.Name, r.ArgsJson, r.ArgsVersion, r.Attempts, r.MaxAttempts, r.RetryDelayMs,
+                    r.RetryJitterMs, r.Version, attempt.Id, r.Run);
+            }).ToList();
             return Task.FromResult(claimed);
         }
     }
 
-    public Task<bool> SucceedAsync(ClaimedJob job, string nodeId, DateTime finishedAt, CancellationToken ct) =>
-        Task.FromResult(Finish(job, AttemptOutcome.Succeeded, null,
-            new Transition(job.Id, job.Version, Transitions.Finish, JobState.Succeeded, Reasons.Succeeded, finishedAt, LockedBy: nodeId)));
-
-    public Task<bool> FailAsync(ClaimedJob job, string nodeId, string error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct) =>
-        Task.FromResult(Finish(job, AttemptOutcome.Failed, error,
-            retryAt is null
-                ? new Transition(job.Id, job.Version, Transitions.Finish, JobState.Failed, Reasons.MaxAttemptsExhausted, finishedAt, LockedBy: nodeId)
-                : new Transition(job.Id, job.Version, Transitions.Finish, JobState.Scheduled, Reasons.RetryScheduled, finishedAt, RunAt: retryAt, LockedBy: nodeId)));
-
-    private bool Finish(ClaimedJob job, AttemptOutcome outcome, string? error, Transition transition)
+    public Task<bool> FinishAsync(
+        ClaimedJob job, string nodeId, JobTransition transition, AttemptOutcome outcome, string? error, DateTime finishedAt, DateTime? retryAt, CancellationToken ct)
     {
         lock (_lock)
         {
-            if (!TryTransition(transition)) return false;
-            var attempt = _jobs[job.Id].AttemptLog.Single(a => a.Id == job.AttemptId);
-            attempt.FinishedAt = transition.Now;
-            attempt.Outcome = outcome;
-            attempt.Error = error;
+            if (!_jobs.TryGetValue(job.Id, out var r) || r.LockedBy != nodeId || !Apply(r, transition, job.Version, retryAt, finishedAt))
+                return Task.FromResult(false);
+            r.AttemptLog.Single(a => a.Id == job.AttemptId).Close(finishedAt, outcome, error);
         }
-        Notify(transition.To);
-        return true;
+        return Task.FromResult(true);
     }
 
     public Task RenewLeasesAsync(string nodeId, IReadOnlyCollection<Guid> ids, DateTime leaseUntil, CancellationToken ct)
@@ -153,27 +123,21 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
 
     public Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct)
     {
-        List<Row> stale;
+        var recovered = 0;
         lock (_lock)
         {
-            stale = _jobs.Values
+            var stale = _jobs.Values
                 .Where(r => r.State == JobState.Processing && (r.LeaseExpiresAt < now || (ownNodeId != null && r.LockedBy == ownNodeId)))
                 .ToList();
             foreach (var r in stale)
             {
                 foreach (var a in r.AttemptLog.Where(a => a.Run == r.Run && a.FinishedAt == null))
-                {
-                    a.FinishedAt = now;
-                    a.Outcome = AttemptOutcome.Interrupted;
-                }
-                var exhausted = r.Attempts >= r.MaxAttempts;
-                TryTransition(new Transition(r.Id, r.Version, Transitions.Finish,
-                    exhausted ? JobState.Failed : JobState.Enqueued,
-                    exhausted ? Reasons.MaxAttemptsExhausted : Reasons.RecoveredAfterCrash, now));
+                    a.Close(now, AttemptOutcome.Interrupted, null);
+                var transition = JobTransition.Recover(r.Attempts, r.MaxAttempts);
+                if (Apply(r, transition, r.Version, null, now)) recovered++;
             }
         }
-        if (stale.Count > 0) Notify(JobState.Enqueued);
-        return Task.FromResult(stale.Count);
+        return Task.FromResult(recovered);
     }
 
     public Task<QueueStats> QueueStatsAsync(CancellationToken ct)
@@ -185,63 +149,46 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
         }
     }
 
-    public Task DeleteAsync(Guid id, DateTime now, CancellationToken ct) =>
-        UserTransition(id, "delete", v => new Transition(id, v, Transitions.Delete, JobState.Deleted, Reasons.DeletedByUser, now));
-
-    public Task RequeueAsync(Guid id, DateTime now, CancellationToken ct) =>
-        UserTransition(id, "requeue", v => new Transition(id, v, Transitions.Requeue, JobState.Enqueued, Reasons.RequeuedByUser, now, ResetAttempts: true));
-
-    private Task UserTransition(Guid id, string operation, Func<int, Transition> transition)
+    public Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct)
     {
-        Transition t;
         lock (_lock)
         {
             if (!_jobs.TryGetValue(id, out var r)) throw new JobNotFoundException(id);
-            t = transition(r.Version);
-            if (!TryTransition(t)) throw new InvalidJobTransitionException(id, r.State, operation);
+            if (!Apply(r, transition, r.Version, null, now)) throw new InvalidJobTransitionException(id, r.State, transition.Operation);
         }
-        Notify(t.To);
         return Task.CompletedTask;
     }
 
-    private sealed record Transition(
-        Guid Id, int Version, JobState[] From, JobState To, string Reason, DateTime Now,
-        DateTime? RunAt = null, bool ResetAttempts = false, string? LockedBy = null);
-
-    /// Mirrors PostgresJobStore.TransitionAsync: guarded by version, source state and owner; always writes history.
-    /// Callers hold the lock.
-    private bool TryTransition(Transition t)
+    /// The shared mechanics of IJobStore, guarded by source state and version. Callers hold the lock.
+    private bool Apply(Row r, JobTransition t, int expectedVersion, DateTime? runAt, DateTime now)
     {
-        var r = _jobs[t.Id];
-        if (r.Version != t.Version || !t.From.Contains(r.State) || (t.LockedBy != null && r.LockedBy != t.LockedBy)) return false;
-        r.State = t.To;
+        if (r.Version != expectedVersion || !t.Allows(r.State)) return false;
         r.Version++;
-        r.UpdatedAt = t.Now;
-        r.RunAt = t.RunAt;
-        if (t.To == JobState.Enqueued) Enqueue(r, t.Now);
-        if (t.ResetAttempts) { r.Attempts = 0; r.Run++; }
         r.LockedBy = null;
         r.LeaseExpiresAt = null;
-        r.History.Add(new JobHistoryEntry(t.To, t.Now, t.Reason));
+        if (t.ResetAttempts) { r.Attempts = 0; r.Run++; }
+        Enter(r, t, now, runAt);
         return true;
     }
 
-    private void Enqueue(Row r, DateTime now)
+    private void Enter(Row r, JobTransition t, DateTime now, DateTime? runAt)
     {
-        r.State = JobState.Enqueued;
-        r.EnqueuedAt = now;
-        r.EnqueueSeq = ++_enqueueSeq;
-    }
-
-    private void Notify(JobState state)
-    {
-        if (state == JobState.Enqueued) signals.Dispatcher.Set();
-        else if (state == JobState.Scheduled) signals.Scheduler.Set();
+        r.State = t.To;
+        r.UpdatedAt = now;
+        r.RunAt = t.To == JobState.Scheduled ? runAt : null;
+        if (t.To == JobState.Enqueued)
+        {
+            r.EnqueuedAt = now;
+            r.EnqueueSeq = ++_enqueueSeq;
+        }
+        r.History.Add(new JobHistoryEntry(t.To, now, t.Reason));
     }
 
     private sealed class Row
     {
         public Guid Id { get; init; }
+        /// Text form: its ordinal order is the uuid order of the Postgres store.
+        public string Key => Id.ToString();
         public required string Name { get; init; }
         public required string ArgsJson { get; init; }
         public int ArgsVersion { get; init; }
@@ -267,10 +214,17 @@ internal sealed class InMemoryJobStore(Signals signals) : IJobStore
     {
         public Guid Id => id;
         public int Run => run;
-        public DateTime? FinishedAt { get; set; }
-        public AttemptOutcome? Outcome { get; set; }
-        public string? Error { get; set; }
+        public DateTime? FinishedAt { get; private set; }
+        private AttemptOutcome? _outcome;
+        private string? _error;
 
-        public JobAttempt ToPublic() => new(attempt, startedAt, FinishedAt, Outcome, Error);
+        public void Close(DateTime at, AttemptOutcome outcome, string? error)
+        {
+            FinishedAt = at;
+            _outcome = outcome;
+            _error = error;
+        }
+
+        public JobAttempt ToPublic() => new(attempt, startedAt, FinishedAt, _outcome, _error);
     }
 }

@@ -1,15 +1,12 @@
-using BackgroundJobs.Processing;
 using BackgroundJobs.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
-namespace BackgroundJobs.Storage.Postgres;
+namespace BackgroundJobs.Postgres;
 
 internal static class JobNotifications
 {
     public const string Channel = "bj_jobs";
-    public const string Enqueued = "enqueued";
-    public const string Scheduled = "scheduled";
 }
 
 /// Owns the data source so the store and the listener share one pool.
@@ -21,7 +18,7 @@ internal sealed class JobDataSource(NpgsqlDataSource db) : IAsyncDisposable
 
 /// LISTENs on a dedicated connection and wakes the local loops, so other nodes' writes are seen in ms.
 /// Polling remains the fallback while disconnected.
-internal sealed class PostgresJobListener(JobDataSource source, Signals signals, TimeProvider time, ILogger<PostgresJobListener> logger)
+internal sealed class PostgresJobListener(JobDataSource source, IJobSignals signals, TimeProvider time, ILogger<PostgresJobListener> logger)
     : IJobStoreListener
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromMilliseconds(500), MaxBackoff = TimeSpan.FromSeconds(30);
@@ -34,13 +31,13 @@ internal sealed class PostgresJobListener(JobDataSource source, Signals signals,
             try
             {
                 await using var conn = await source.Db.OpenConnectionAsync(ct);
-                conn.Notification += (_, e) => (e.Payload == JobNotifications.Scheduled ? signals.Scheduler : signals.Dispatcher).Set();
+                conn.Notification += (_, e) => signals.Entered(JobStateWire.ParseState(e.Payload));
                 await using (var cmd = new NpgsqlCommand($"LISTEN {JobNotifications.Channel}", conn))
                     await cmd.ExecuteNonQueryAsync(ct);
                 backoff = MinBackoff;
                 // Catch up on anything written while we were not listening.
-                signals.Dispatcher.Set();
-                signals.Scheduler.Set();
+                signals.JobsReady();
+                signals.SchedulesChanged();
                 while (true) await conn.WaitAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }

@@ -5,10 +5,11 @@ namespace BackgroundJobs.E2E.Scenarios;
 [Collection(E2ECollection.Name)]
 public sealed class S04_WorkerLimit(PostgresFixture pg)
 {
-    [Fact]
-    public async Task Two_workers_overlap_but_never_exceed_two_and_never_duplicate()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Two_workers_overlap_but_never_exceed_two_and_never_duplicate(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync(), workers: 2);
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store), workers: 2);
 
         var ids = new List<string>();
         for (var i = 0; i < 6; i++) ids.Add(await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 400 }));

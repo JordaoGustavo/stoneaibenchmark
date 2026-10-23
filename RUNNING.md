@@ -38,7 +38,8 @@ dotnet test
 ```
 
 Os testes E2E (`tests/BackgroundJobs.E2E/Scenarios`, um arquivo por critério de aceite 1–10, mais `S11_ApiContracts`,
-`S12_Observability`, `S13_InMemoryStore` (demo com `STORAGE=memory`, sem Postgres) e `S14_ArgsVersioning`)
+`S12_Observability`, `S13_Dashboard` e `S14_ArgsVersioning`). S01–S07, S11 e S13 rodam duas vezes: no Postgres e no
+store em memória (demo com `STORAGE=memory`))
 sobem a demo como processo real contra um Postgres do Testcontainers, usando `kill -9` e `SIGTERM` de verdade.
 Precisam do Docker rodando.
 
@@ -47,9 +48,9 @@ Precisam do Docker rodando.
 Veja `samples/WorkerExample/Program.cs`:
 
 ```csharp
-builder.Services.AddBackgroundJobs(
-    o => o.ConnectionString = "...",
-    jobs => jobs.Register<GreetJob, GreetArgs>("greet"));
+builder.Services
+    .AddBackgroundJobs(registerJobs: jobs => jobs.Register<GreetJob, GreetArgs>("greet"))
+    .UsePostgres("...");
 // ...
 var id = await client.EnqueueAsync("greet", new GreetArgs("now"),
     new JobOptions { RunAt = DateTimeOffset.UtcNow.AddSeconds(2), MaxAttempts = 5 });

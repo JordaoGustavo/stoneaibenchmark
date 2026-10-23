@@ -12,8 +12,8 @@ public static class JobStateWire
     public static AttemptOutcome ParseOutcome(string s) => Enum.Parse<AttemptOutcome>(s, ignoreCase: true);
 
     /// Whether <see cref="IJobClient.DeleteAsync"/> accepts a job in this state.
-    public static bool CanDelete(this JobState s) => Transitions.Delete.Contains(s);
+    public static bool CanDelete(this JobState s) => JobTransition.Delete.Allows(s);
 
     /// Whether <see cref="IJobClient.RequeueAsync"/> accepts a job in this state.
-    public static bool CanRequeue(this JobState s) => Transitions.Requeue.Contains(s);
+    public static bool CanRequeue(this JobState s) => JobTransition.Requeue.Allows(s);
 }

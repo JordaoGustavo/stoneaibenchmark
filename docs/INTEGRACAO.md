@@ -26,18 +26,19 @@ Biblioteca .NET para execução de jobs em segundo plano persistidos em PostgreS
 
 - .NET 10 (`net10.0`; SDK fixado em `global.json`: `10.0.402`, `rollForward: latestFeature`)
 - PostgreSQL (testado com `postgres:17-alpine`)
-- Dependências do núcleo: `Npgsql` 9.0.3, `Dapper` 2.1.66 e `Microsoft.Extensions.*` (hosting, health checks, métricas). O núcleo **não** depende de ASP.NET Core.
+- Dependências do núcleo: só `Microsoft.Extensions.*` (hosting, health checks, métricas). O núcleo **não** depende de ASP.NET Core nem de driver de banco; o pacote Postgres traz `Npgsql` 9.0.3 e `Dapper` 2.1.66.
 
-A biblioteca é dividida em três pacotes; referencie só o que usar:
+A biblioteca é dividida em pacotes; referencie só o que usar:
 
 | Pacote | Conteúdo | Depende de |
 |---|---|---|
-| `BackgroundJobs` | `AddBackgroundJobs`, `IJobClient`, registro de jobs, stores Postgres e em memória, health check | — |
+| `BackgroundJobs` | `AddBackgroundJobs`, `IJobClient`, registro de jobs, regras de transição, store em memória, health check | — |
+| `BackgroundJobs.Postgres` | `.UsePostgres(connectionString)`: store, migrations e LISTEN/NOTIFY | `BackgroundJobs`, Npgsql, Dapper |
 | `BackgroundJobs.AspNetCore` | `MapBackgroundJobsApi()`: `/api/jobs`, `/health`, `/health/details` | `BackgroundJobs`, ASP.NET Core |
 | `BackgroundJobs.Dashboard` | `MapBackgroundJobsDashboard()`: UI HTML em `/jobs` | `BackgroundJobs`, ASP.NET Core |
 
 ```xml
-<ProjectReference Include="path/to/src/BackgroundJobs/BackgroundJobs.csproj" />
+<ProjectReference Include="path/to/src/BackgroundJobs.Postgres/BackgroundJobs.Postgres.csproj" /> <!-- traz o núcleo -->
 <!-- opcionais -->
 <ProjectReference Include="path/to/src/BackgroundJobs.AspNetCore/BackgroundJobs.AspNetCore.csproj" />
 <ProjectReference Include="path/to/src/BackgroundJobs.Dashboard/BackgroundJobs.Dashboard.csproj" />
@@ -54,9 +55,9 @@ using BackgroundJobs;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddBackgroundJobs(
-    o => o.ConnectionString = "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs",
-    jobs => jobs.Register<SendEmailJob, SendEmailArgs>("send-email"));
+builder.Services
+    .AddBackgroundJobs(registerJobs: jobs => jobs.Register<SendEmailJob, SendEmailArgs>("send-email"))
+    .UsePostgres("Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs");
 
 var app = builder.Build();
 app.MapBackgroundJobsApi();        // opcional (BackgroundJobs.AspNetCore): /health e /api/jobs
@@ -202,11 +203,13 @@ Datas em UTC (precisão de microssegundos, igual ao Postgres).
 
 ## 5. Configuração
 
-`AddBackgroundJobs(Action<BackgroundJobsOptions> configure, Action<JobRegistry>? registerJobs = null)`
+`AddBackgroundJobs(Action<BackgroundJobsOptions>? configure = null, Action<JobRegistry>? registerJobs = null)` devolve um
+`BackgroundJobsBuilder`, no qual se escolhe **um** store: `.UsePostgres(connectionString)` (pacote `BackgroundJobs.Postgres`,
+connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Sem store, a aplicação falha ao iniciar com
+`InvalidOperationException: no job store configured`.
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `ConnectionString` | — (**obrigatória**, exceto com `UseInMemoryStorage()`) | Connection string Npgsql (`Host=...;Database=...`) |
 | `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
 | `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
@@ -224,10 +227,10 @@ A biblioteca **não lê** `IConfiguration` sozinha; faça o bind você mesmo:
 ```csharp
 builder.Services.AddBackgroundJobs(o =>
 {
-    o.ConnectionString = builder.Configuration.GetConnectionString("Jobs")!;
     o.WorkerCount = builder.Configuration.GetValue("Jobs:WorkerCount", 4);
     o.NodeId = Environment.GetEnvironmentVariable("NODE_ID") ?? Environment.MachineName;
-}, jobs => ...);
+}, jobs => ...)
+.UsePostgres(builder.Configuration.GetConnectionString("Jobs")!);
 ```
 
 > URLs no formato `postgres://user:pass@host:5432/db` **não** são aceitas pela biblioteca; o projeto Demo tem um conversor (`ToConnectionString` em `src/BackgroundJobs.Demo/Program.cs`) que pode ser copiado.
@@ -280,13 +283,33 @@ Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 ### Store em memória (testes)
 
 ```csharp
-builder.Services.AddBackgroundJobs(o => o.UseInMemoryStorage(), jobs => ...);
+builder.Services.AddBackgroundJobs(registerJobs: jobs => ...).UseInMemoryStorage();
 ```
 
 Troca o Postgres por um store no próprio processo, com as mesmas transições, histórico, FIFO, retry, agendamento,
 delete/requeue e versão de args — útil para testes rápidos de quem integra a biblioteca, sem Docker.
 Não persiste nada (tudo some quando o processo termina) e não é compartilhado entre processos: **não use em produção**.
-O demo roda com ele via `STORAGE=memory`; `S13_InMemoryStore` roda os mesmos fluxos sem Postgres.
+O demo roda com ele via `STORAGE=memory`.
+
+### Escrevendo um novo store
+
+Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o núcleo e implementa o SPI público em
+`BackgroundJobs.Storage`:
+
+- **`IJobStore`** — persiste jobs. **Não decide regras**: quais estados podem sair para onde, com que motivo de histórico
+  e se zera tentativas vem pronto em `JobTransition` (`Promote`, `Claim`, `Succeed`, `Fail`, `Recover`, `Delete`, `Requeue`),
+  junto com `NewJob.Creation`. O store só aplica a transição de forma atômica, seguindo a mecânica comum descrita no
+  comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
+  FIFO ao entrar em `enqueued`, grava o histórico.
+- **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via
+  `IJobSignals`. As mudanças do próprio nó já acordam os loops pelo núcleo; sem listener, outros nós são vistos no polling.
+- Um método de extensão `UseXxx(this BackgroundJobsBuilder)` que faz `Services.Replace` de `IJobStore` e `IJobStoreListener`
+  (veja `src/BackgroundJobs.Postgres/PostgresBuilderExtensions.cs`).
+
+**Conformidade:** os cenários E2E que não dependem de durabilidade (S01–S07, S11, S13) rodam contra **todos** os stores
+de `Stores.All` (`tests/BackgroundJobs.E2E/Infra/PostgresFixture.cs`). Para validar um store novo, adicione-o ali e ao
+demo (`STORAGE=...`): o mesmo comportamento observável é o contrato. Cenários de restart/crash/parada (S08–S10) exigem
+store durável.
 
 ## 8. API HTTP (opcional)
 
@@ -422,9 +445,12 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 | Contratos públicos | `src/BackgroundJobs/Abstractions/` |
 | Estados e transições | `src/BackgroundJobs/Domain/` |
 | Versionamento de args | `src/BackgroundJobs/Registry/JobRegistry.cs` |
+| Regras de transição | `src/BackgroundJobs/Domain/Transitions.cs` |
+| SPI de store | `src/BackgroundJobs/Storage/IJobStore.cs` |
 | Store em memória | `src/BackgroundJobs/Storage/InMemory/InMemoryJobStore.cs` |
+| Store Postgres | `src/BackgroundJobs.Postgres/` |
 | API HTTP | `src/BackgroundJobs.AspNetCore/ManagementEndpoints.cs` |
 | Dashboard | `src/BackgroundJobs.Dashboard/DashboardEndpoints.cs` |
-| Schema | `src/BackgroundJobs/Storage/Postgres/Migrations/` |
+| Schema | `src/BackgroundJobs.Postgres/Migrations/` |
 | Exemplo sem HTTP | `samples/WorkerExample/Program.cs` |
 | Exemplo com HTTP | `src/BackgroundJobs.Demo/Program.cs` |

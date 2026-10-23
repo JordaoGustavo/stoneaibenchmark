@@ -38,8 +38,11 @@ internal sealed class WakeSignal
 }
 
 /// Separate signals so a wake-up for the dispatcher is never consumed by the scheduler.
-internal sealed class Signals
+internal sealed class Signals : Storage.IJobSignals
 {
     public WakeSignal Dispatcher { get; } = new();
     public WakeSignal Scheduler { get; } = new();
+
+    public void JobsReady() => Dispatcher.Set();
+    public void SchedulesChanged() => Scheduler.Set();
 }

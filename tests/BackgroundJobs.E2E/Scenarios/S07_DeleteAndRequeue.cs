@@ -6,10 +6,11 @@ namespace BackgroundJobs.E2E.Scenarios;
 [Collection(E2ECollection.Name)]
 public sealed class S07_DeleteAndRequeue(PostgresFixture pg)
 {
-    [Fact]
-    public async Task Deleted_job_never_runs_and_requeued_job_runs_again_with_history_kept()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Deleted_job_never_runs_and_requeued_job_runs_again_with_history_kept(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
 
         var scheduled = await demo.Api.EnqueueAsync("succeed-after", new { delayMs = 0 }, new { runAt = DateTime.UtcNow.AddSeconds(1) });
         var delete = await demo.Api.DeleteAsync(scheduled);
@@ -45,10 +46,11 @@ public sealed class S07_DeleteAndRequeue(PostgresFixture pg)
         await demo.Api.WaitForStateAsync(scheduled, "succeeded");
     }
 
-    [Fact]
-    public async Task Unknown_ids_return_404()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Unknown_ids_return_404(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
         var missing = Guid.CreateVersion7().ToString();
 
         Assert.Equal(HttpStatusCode.NotFound, (await demo.Api.GetJobRawAsync(missing)).StatusCode);

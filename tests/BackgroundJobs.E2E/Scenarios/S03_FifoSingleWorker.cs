@@ -5,10 +5,11 @@ namespace BackgroundJobs.E2E.Scenarios;
 [Collection(E2ECollection.Name)]
 public sealed class S03_FifoSingleWorker(PostgresFixture pg)
 {
-    [Fact]
-    public async Task Messages_run_in_enqueue_order_with_one_worker()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Messages_run_in_enqueue_order_with_one_worker(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync(), workers: 1);
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store), workers: 1);
 
         foreach (var message in new[] { "A", "B", "C" })
             await demo.Api.EnqueueAsync("log-message", new { message });

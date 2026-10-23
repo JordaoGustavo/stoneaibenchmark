@@ -44,10 +44,11 @@ public sealed class S11_ApiContracts(PostgresFixture pg)
         Assert.False(string.IsNullOrEmpty(error!["error"]!.GetValue<string>()));
     }
 
-    [Fact]
-    public async Task List_returns_summaries_in_creation_order_with_cursor_pagination()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task List_returns_summaries_in_creation_order_with_cursor_pagination(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
         var ids = new List<string>();
         for (var i = 0; i < 3; i++)
             ids.Add(await demo.Api.EnqueueAsync("log-message", new { message = $"m{i}" }, new { runAt = DateTime.UtcNow.AddMinutes(5) }));
@@ -66,10 +67,11 @@ public sealed class S11_ApiContracts(PostgresFixture pg)
         Assert.Null(page2["nextCursor"]);
     }
 
-    [Fact]
-    public async Task Health_is_ok_when_ready_and_job_view_has_the_full_contract()
+    [Theory]
+    [MemberData(nameof(Stores.All), MemberType = typeof(Stores))]
+    public async Task Health_is_ok_when_ready_and_job_view_has_the_full_contract(string store)
     {
-        await using var demo = await DemoProcess.StartAsync(await pg.CreateDatabaseAsync());
+        await using var demo = await DemoProcess.StartAsync(await pg.CreateStoreAsync(store));
         var health = await demo.Api.GetHealthAsync();
         Assert.Equal("""{"status":"ok"}""", await health.Content.ReadAsStringAsync());
 
