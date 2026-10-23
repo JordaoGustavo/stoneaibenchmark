@@ -21,6 +21,21 @@ public sealed record JobOptions
     /// Higher runs first within its queue, between <see cref="JobQueues.MinPriority"/> and <see cref="JobQueues.MaxPriority"/>.
     /// Defaults to <see cref="JobQueues.DefaultPriority"/>.
     public int? Priority { get; init; }
+
+    /// While a job enqueued with this key is not finished (scheduled, enqueued or processing), enqueueing the key again
+    /// creates nothing and returns that job's id, whatever the new name, args and options. Once it finished, the key is free. Up to <see cref="MaxIdempotencyKeyLength"/>
+    /// characters, not blank. Null: no deduplication.
+    public string? IdempotencyKey { get; init; }
+
+    public const int MaxIdempotencyKeyLength = 200;
+
+    internal static void CheckIdempotencyKey(string? key)
+    {
+        if (key == null) return;
+        if (string.IsNullOrWhiteSpace(key)) throw new ArgumentException("idempotency key must not be blank");
+        if (key.Length > MaxIdempotencyKeyLength)
+            throw new ArgumentException($"idempotency key must be at most {MaxIdempotencyKeyLength} characters");
+    }
 }
 
 public sealed class BackgroundJobsOptions

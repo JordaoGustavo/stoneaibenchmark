@@ -5,7 +5,7 @@ namespace BackgroundJobs.Storage;
 
 public sealed record NewJob(
     Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now,
-    string Queue, int Priority)
+    string Queue, int Priority, string? IdempotencyKey = null)
 {
     /// Whether the job starts scheduled (RunAt in the future) or enqueued.
     public JobTransition Creation => JobTransition.Create(RunAt > Now);
@@ -93,8 +93,10 @@ public interface IJobStore
     /// Creates or upgrades the schema. Called at every start, concurrently from several nodes.
     Task MigrateAsync(CancellationToken ct);
 
-    /// Applies <see cref="NewJob.Creation"/>.
-    Task InsertAsync(NewJob job, CancellationToken ct);
+    /// Applies <see cref="NewJob.Creation"/> and returns job.Id; or, when an unfinished job (not in
+    /// <see cref="JobStateWire.Finished"/>) holds <see cref="NewJob.IdempotencyKey"/>, inserts nothing and returns that job's
+    /// id. Atomic: of concurrent inserts with one key, exactly one creates a job.
+    Task<Guid> InsertAsync(NewJob job, CancellationToken ct);
     Task<Job?> GetAsync(Guid id, CancellationToken ct);
 
     /// Ascending by id. For UUIDv7 ids that is creation order, and the order of their text form.
@@ -144,6 +146,7 @@ public interface IJobStore
 
     /// Applies a user transition (<see cref="JobTransition.Delete"/>, <see cref="JobTransition.Requeue"/>).
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
+    /// <exception cref="IdempotencyKeyConflictException">A requeue whose key another unfinished job holds; nothing changes.</exception>
     Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct);
 
     /// Inserts or replaces a recurring definition, keeping created_at and last run, and next_run_at when cron and time

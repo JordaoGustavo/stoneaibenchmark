@@ -183,6 +183,7 @@ public static class ManagementEndpoints
         try { return await action(jobId); }
         catch (JobNotFoundException e) { return Error(404, e.Message); }
         catch (InvalidJobTransitionException e) { return Error(409, e.Message); }
+        catch (IdempotencyKeyConflictException e) { return Error(409, e.Message); }
     }
 
     private static object ToView(Job job) => new
@@ -195,6 +196,7 @@ public static class ManagementEndpoints
         maxAttempts = job.MaxAttempts,
         queue = job.Queue,
         priority = job.Priority,
+        idempotencyKey = job.IdempotencyKey,
         retryDelayMs = (int)job.RetryDelay.TotalMilliseconds,
         scheduledAt = job.ScheduledAt,
         createdAt = job.CreatedAt,

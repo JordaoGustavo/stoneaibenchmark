@@ -13,6 +13,7 @@ internal sealed class JobClient(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         var o = jobOptions;
+        JobOptions.CheckIdempotencyKey(o?.IdempotencyKey);
         var settings = JobSettings.Resolve(options.Value, o?.MaxAttempts, o?.RetryDelay, o?.RetryJitter, o?.Queue, o?.Priority);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
@@ -23,10 +24,10 @@ internal sealed class JobClient(
         var id = Guid.CreateVersion7(now);
         var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, settings.MaxAttempts,
-            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority);
-        await store.InsertAsync(job, ct);
-        signals.Entered(job.Creation.To);
-        return id;
+            settings.RetryDelayMs, settings.RetryJitterMs, jobOptions?.RunAt?.UtcDateTime, now, settings.Queue, settings.Priority, o?.IdempotencyKey);
+        var stored = await store.InsertAsync(job, ct);
+        if (stored == id) signals.Entered(job.Creation.To);
+        return stored;
     }
 
     public async Task<Job> GetAsync(Guid id, CancellationToken ct = default) =>

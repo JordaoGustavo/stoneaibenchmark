@@ -25,7 +25,9 @@ public sealed record Job(
     /// Attempts of the current run given back because a server stopped; Attempts - RefundedAttempts counts against MaxAttempts.
     int RefundedAttempts = 0,
     string Queue = JobQueues.Default,
-    int Priority = JobQueues.DefaultPriority);
+    int Priority = JobQueues.DefaultPriority,
+    /// See <see cref="JobOptions.IdempotencyKey"/>.
+    string? IdempotencyKey = null);
 
 public sealed record JobHistoryEntry(JobState State, DateTime At, string Reason);
 

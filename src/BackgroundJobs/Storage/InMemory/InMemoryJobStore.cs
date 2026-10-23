@@ -12,27 +12,30 @@ internal sealed class InMemoryJobStore : IJobStore
     /// (node, queue) → alive until.
     private readonly Dictionary<(string Node, string Queue), DateTime> _consumers = [];
     private readonly SortedDictionary<string, RecurringJob> _recurring = new(StringComparer.Ordinal);
+    /// Idempotency key → the unfinished job holding it; kept by Enter.
+    private readonly Dictionary<string, Guid> _keyHolders = new(StringComparer.Ordinal);
 
     public Task MigrateAsync(CancellationToken ct) => Task.CompletedTask;
 
-    public Task InsertAsync(NewJob job, CancellationToken ct)
+    public Task<Guid> InsertAsync(NewJob job, CancellationToken ct)
     {
-        lock (_lock) InsertLocked(job);
-        return Task.CompletedTask;
+        lock (_lock) return Task.FromResult(InsertLocked(job));
     }
 
     /// Callers hold the lock.
-    private void InsertLocked(NewJob job)
+    private Guid InsertLocked(NewJob job)
     {
+        if (job.IdempotencyKey != null && _keyHolders.TryGetValue(job.IdempotencyKey, out var holder)) return holder;
         var creation = job.Creation;
         var row = new Row
         {
             Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
             MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
-            CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority,
+            CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority, IdempotencyKey = job.IdempotencyKey,
         };
         Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
         _jobs.Add(job.Id, row);
+        return job.Id;
     }
 
     public Task<Job?> GetAsync(Guid id, CancellationToken ct)
@@ -43,7 +46,7 @@ internal sealed class InMemoryJobStore : IJobStore
             return Task.FromResult<Job?>(new Job(
                 r.Id, r.Name, JsonDocument.Parse(r.ArgsJson).RootElement.Clone(), r.ArgsVersion, r.State, r.Attempts, r.MaxAttempts,
                 TimeSpan.FromMilliseconds(r.RetryDelayMs), r.State == JobState.Scheduled ? r.RunAt : null, r.CreatedAt, r.UpdatedAt,
-                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority));
+                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority, r.IdempotencyKey));
         }
     }
 
@@ -197,6 +200,9 @@ internal sealed class InMemoryJobStore : IJobStore
         lock (_lock)
         {
             if (!_jobs.TryGetValue(id, out var r)) throw new JobNotFoundException(id);
+            if (transition.Allows(r.State) && !JobStateWire.Finished.Contains(transition.To) && r.IdempotencyKey != null
+                && _keyHolders.TryGetValue(r.IdempotencyKey, out var holder) && holder != id)
+                throw new IdempotencyKeyConflictException(id, r.IdempotencyKey, holder);
             if (!Apply(r, transition, r.Version, null, now)) throw new InvalidJobTransitionException(id, r.State, transition.Operation);
         }
         return Task.CompletedTask;
@@ -293,6 +299,9 @@ internal sealed class InMemoryJobStore : IJobStore
             r.EnqueueSeq = ++_enqueueSeq;
         }
         r.History.Add(new JobHistoryEntry(t.To, now, t.Reason));
+        if (r.IdempotencyKey == null) return;
+        if (!JobStateWire.Finished.Contains(t.To)) _keyHolders[r.IdempotencyKey] = r.Id;
+        else if (_keyHolders.GetValueOrDefault(r.IdempotencyKey) == r.Id) _keyHolders.Remove(r.IdempotencyKey);
     }
 
     private sealed class Row
@@ -305,6 +314,7 @@ internal sealed class InMemoryJobStore : IJobStore
         public int ArgsVersion { get; init; }
         public required string Queue { get; init; }
         public int Priority { get; init; }
+        public string? IdempotencyKey { get; init; }
         public JobState State { get; set; }
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }

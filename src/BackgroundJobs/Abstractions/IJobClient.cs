@@ -2,7 +2,8 @@ namespace BackgroundJobs;
 
 public interface IJobClient
 {
-    /// Persists the job and returns its id. Unknown names are accepted and fail when executed.
+    /// Persists the job and returns its id. Unknown names are accepted and fail when executed. With
+    /// <see cref="JobOptions.IdempotencyKey"/> held by an unfinished job, persists nothing and returns that job's id.
     Task<Guid> EnqueueAsync<TArgs>(string jobName, TArgs args, JobOptions? options = null, CancellationToken ct = default);
 
     /// <exception cref="JobNotFoundException"/>
@@ -15,6 +16,7 @@ public interface IJobClient
     Task DeleteAsync(Guid id, CancellationToken ct = default);
 
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>
+    /// <exception cref="IdempotencyKeyConflictException"/>
     Task RequeueAsync(Guid id, CancellationToken ct = default);
 
     /// Stops a job for good: a scheduled or enqueued one at once; a processing one by firing its

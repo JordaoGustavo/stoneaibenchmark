@@ -29,32 +29,54 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await tx.CommitAsync(ct);
     }
 
-    public async Task InsertAsync(NewJob job, CancellationToken ct)
+    public async Task<Guid> InsertAsync(NewJob job, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        await using var tx = await conn.BeginTransactionAsync(ct);
-        await InsertJobAsync(conn, tx, job);
-        await tx.CommitAsync(ct);
+        while (true)
+        {
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            if (await InsertJobAsync(conn, tx, job))
+            {
+                await tx.CommitAsync(ct);
+                return job.Id;
+            }
+            // Read committed: this statement sees the holder the insert conflicted with, unless it finished meanwhile;
+            // then the key is free and the insert is retried.
+            if (await FindKeyHolderAsync(conn, job.IdempotencyKey!, tx) is { } holder) return holder;
+        }
     }
 
-    private static async Task InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job)
+    private static Task<Guid?> FindKeyHolderAsync(NpgsqlConnection conn, string key, NpgsqlTransaction? tx = null) =>
+        conn.QuerySingleOrDefaultAsync<Guid?>($"SELECT id FROM bj_jobs WHERE idempotency_key = @key AND {KeyHeld}", new { key }, tx);
+
+    /// The predicate of the bj_jobs_idempotency_key partial index: the job holds its key.
+    private const string KeyHeld = "state IN ('scheduled', 'enqueued', 'processing')";
+
+    /// False, inserting nothing, when an unfinished job holds job.IdempotencyKey.
+    private static async Task<bool> InsertJobAsync(NpgsqlConnection conn, NpgsqlTransaction tx, NewJob job)
     {
         var creation = job.Creation;
         var scheduled = creation.To == JobState.Scheduled;
-        await conn.ExecuteAsync("""
+        // The conflict target names the partial unique index by its columns and predicate. A sequence value taken by a
+        // conflicting insert is lost, which only leaves a gap in the FIFO tie-breaker.
+        var inserted = await conn.ExecuteAsync($"""
             INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
-                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority)
+                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority, idempotency_key)
             VALUES (@Id, @Name, @ArgsJson::jsonb, @ArgsVersion, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
-                    @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority)
+                    @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority,
+                    @IdempotencyKey)
+            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL AND {KeyHeld} DO NOTHING
             """,
             new
             {
                 job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = creation.To.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
-                job.Queue, job.Priority,
+                job.Queue, job.Priority, job.IdempotencyKey,
             }, tx);
+        if (inserted == 0) return false;
         await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
         await NotifyAsync(conn, tx, creation.To);
+        return true;
     }
 
     public async Task<Job?> GetAsync(Guid id, CancellationToken ct)
@@ -74,7 +96,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             history.Select(h => new JobHistoryEntry(JobStateWire.ParseState(h.State), h.At, h.Reason)).ToList(),
             attempts.Select(a => new JobAttempt(a.Attempt, a.StartedAt, a.FinishedAt,
                 a.Outcome == null ? null : JobStateWire.ParseOutcome(a.Outcome), a.Error)).ToList(),
-            row.RefundedAttempts, row.Queue, row.Priority);
+            row.RefundedAttempts, row.Queue, row.Priority, row.IdempotencyKey);
     }
 
     public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct)
@@ -249,13 +271,30 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
     public async Task ApplyAsync(Guid id, JobTransition transition, DateTime now, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        await using var tx = await conn.BeginTransactionAsync(ct);
-        var current = await conn.QuerySingleOrDefaultAsync<(string State, int Version)?>(
-            "SELECT state, version FROM bj_jobs WHERE id = @id", new { id }, tx);
-        if (current is null) throw new JobNotFoundException(id);
-        if (!await TransitionAsync(conn, tx, id, current.Value.Version, transition, now))
-            throw new InvalidJobTransitionException(id, JobStateWire.ParseState(current.Value.State), transition.Operation);
-        await tx.CommitAsync(ct);
+        while (true)
+        {
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            var current = await conn.QuerySingleOrDefaultAsync<(string State, int Version, string? IdempotencyKey)?>(
+                "SELECT state, version, idempotency_key FROM bj_jobs WHERE id = @id", new { id }, tx);
+            if (current is null) throw new JobNotFoundException(id);
+            bool changed;
+            try
+            {
+                changed = await TransitionAsync(conn, tx, id, current.Value.Version, transition, now);
+            }
+            catch (PostgresException e) when (e is { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "bj_jobs_idempotency_key" })
+            {
+                // A requeue whose key another unfinished job holds. Holder read after the rollback (the failed statement
+                // aborted the transaction); when it finished meanwhile the key is free and the requeue is retried.
+                await tx.RollbackAsync(ct);
+                var key = current.Value.IdempotencyKey!;
+                if (await FindKeyHolderAsync(conn, key) is { } holder) throw new IdempotencyKeyConflictException(id, key, holder);
+                continue;
+            }
+            if (!changed) throw new InvalidJobTransitionException(id, JobStateWire.ParseState(current.Value.State), transition.Operation);
+            await tx.CommitAsync(ct);
+            return;
+        }
     }
 
     /// The shared mechanics of IJobStore for one job: guarded by version, source state and owner; always writes history.
@@ -381,6 +420,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             return await conn.ExecuteScalarAsync<bool>("SELECT EXISTS (SELECT 1 FROM bj_recurring WHERE id = @id)", new { id = fire.Definition.Id }, tx)
                 ? RecurringFireResult.Stale
                 : RecurringFireResult.Gone;
+        // Recurring jobs carry no idempotency key, so the insert never yields.
         await InsertJobAsync(conn, tx, fire.Job);
         await tx.CommitAsync(ct);
         return RecurringFireResult.Fired;
@@ -406,6 +446,7 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public int ArgsVersion { get; set; }
         public string Queue { get; set; } = "";
         public int Priority { get; set; }
+        public string? IdempotencyKey { get; set; }
         public string State { get; set; } = "";
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }

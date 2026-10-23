@@ -168,11 +168,11 @@ Os cenários `tests/BackgroundJobs.E2E/Scenarios/S14_ArgsVersioning.cs` exercita
 
 | Método | Descrição | Exceções |
 |---|---|---|
-| `EnqueueAsync<TArgs>(name, args, JobOptions? options = null, ct)` | Persiste e retorna o `Guid` (UUIDv7) | `ArgumentException` (nome vazio, opções inválidas) |
+| `EnqueueAsync<TArgs>(name, args, JobOptions? options = null, ct)` | Persiste e retorna o `Guid` (UUIDv7). Com `IdempotencyKey` já usada por um job não terminado, não cria nada e retorna o id dele | `ArgumentException` (nome vazio, opções inválidas) |
 | `GetAsync(id, ct)` | Retorna o `Job` completo, com histórico e tentativas | `JobNotFoundException` |
 | `ListAsync(Guid? after = null, int limit = 100, ct)` | Resumos em ordem de criação; paginação por cursor (`after` = último id visto). `limit` 1..1000 | `ArgumentException` |
 | `DeleteAsync(id, ct)` | Remove da fila (só `scheduled`/`enqueued`) | `JobNotFoundException`, `InvalidJobTransitionException` |
-| `RequeueAsync(id, ct)` | Reexecuta (só `succeeded`/`failed`/`deleted`/`cancelled`), zera tentativas, mantém histórico | `JobNotFoundException`, `InvalidJobTransitionException` |
+| `RequeueAsync(id, ct)` | Reexecuta (só `succeeded`/`failed`/`deleted`/`cancelled`), zera tentativas, mantém histórico | `JobNotFoundException`, `InvalidJobTransitionException`, `IdempotencyKeyConflictException` (a chave do job está com outro job não terminado) |
 | `CancelAsync(id, ct)` | Para de vez (`scheduled`/`enqueued` na hora; `processing` dispara o token — na hora neste nó, em até `LeaseDuration / 3` em outro — e termina em `cancelled`) | `JobNotFoundException`, `InvalidJobTransitionException` |
 
 Erros de banco em chamadas do `IJobClient` **propagam para quem chamou** (não há retry automático no cliente).
@@ -189,6 +189,7 @@ Campos não informados usam os padrões de `BackgroundJobsOptions`.
 | `RetryJitter` (`TimeSpan?`) | Atraso aleatório extra em `[0, RetryJitter]` somado a cada retry |
 | `Queue` (`string?`) | Fila do job (padrão `"default"`). 1–64 caracteres `a-z`, `0-9`, `-`, `_`, `.`, começando por letra ou dígito (`JobQueues.IsValidName`) |
 | `Priority` (`int?`) | Maior roda primeiro dentro da fila; de `-100` a `100`, padrão `0` (`JobQueues`) |
+| `IdempotencyKey` (`string?`) | Deduplicação: enquanto um job com essa chave não terminou (`scheduled`, `enqueued`, `processing`), enfileirar a mesma chave retorna o id dele sem criar outro (nome, args e opções da nova chamada são ignorados), mesmo com chamadas concorrentes em vários nós. Depois que ele termina (`succeeded`, `failed`, `deleted`, `cancelled`) a chave fica livre. Até 200 caracteres, não vazia |
 
 Agendamento não tem método próprio — é `EnqueueAsync` com `RunAt`:
 
@@ -209,7 +210,7 @@ record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? 
 record Job(Guid Id, string Name, JsonElement Args, int ArgsVersion, JobState State, int Attempts, int MaxAttempts,
            TimeSpan RetryDelay, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
            IReadOnlyList<JobHistoryEntry> History, IReadOnlyList<JobAttempt> AttemptHistory,
-           int RefundedAttempts, string Queue, int Priority);
+           int RefundedAttempts, string Queue, int Priority, string? IdempotencyKey);
 record JobHistoryEntry(JobState State, DateTime At, string Reason);
 record JobAttempt(int Attempt, DateTime StartedAt, DateTime? FinishedAt, AttemptOutcome? Outcome, string? Error);
 ```
@@ -372,7 +373,8 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   e se zera tentativas vem pronto em `JobTransition` (`Promote`, `Claim`, `Succeed`, `Fail`, `Recover`, `Interrupt`, `Cancel`, `Delete`, `Requeue`),
   junto com `NewJob.Creation`. O store só aplica a transição de forma atômica, seguindo a mecânica comum descrita no
   comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
-  FIFO ao entrar em `enqueued`, grava o histórico.
+  FIFO ao entrar em `enqueued`, grava o histórico. `InsertAsync` deduplica por `NewJob.IdempotencyKey` (no máximo um job
+  não terminado por chave, de forma atômica — no Postgres, um índice `UNIQUE` parcial) e retorna o id do job que ficou com a chave.
   `ClaimAsync(ClaimRequest)` recebe **uma fila** e uma ordem: `Priority` (prioridade desc, entrada, sequência) ou `Fifo`
   (entrada, sequência). Mantenha os prontos de cada fila indexados nas duas ordens, para o claim ler só o início de uma
   fila: no Postgres são os índices parciais `bj_jobs_ready` e `bj_jobs_ready_fifo` (o claim escreve `state = 'enqueued'`
@@ -402,7 +404,7 @@ Pacote `BackgroundJobs.AspNetCore`. `app.MapBackgroundJobsApi()` — expõe:
 | `GET /api/jobs?after=<id>&limit=<1..1000>` | `200 {"items":[{"id","name","state","attempts"}],"nextCursor":"<id>"\|null}` | `400` |
 | `GET /api/jobs/{id}` | `200` job completo | `404` |
 | `DELETE /api/jobs/{id}` | `200 {"id":"...","state":"deleted"}` | `404`, `409` |
-| `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` |
+| `POST /api/jobs/{id}/requeue` | `202 {"jobId":"..."}` | `404`, `409` (estado não permite, ou a chave de idempotência está com outro job) |
 | `POST /api/jobs/{id}/cancel` | `202 {"jobId":"..."}` (um job em `processing` passa a `cancelled` quando seu código para) | `404`, `409` |
 
 | `GET /api/recurring` | `200 {"items":[recorrente]}` | |
