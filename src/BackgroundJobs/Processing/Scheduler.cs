@@ -14,7 +14,7 @@ internal sealed class Scheduler(
         while (!ct.IsCancellationRequested)
         {
             var promoted = await storeBreaker.TryAsync("promote", () => store.PromoteDueAsync(time.UtcNow(), ct), ct);
-            if (promoted > 0) signals.Dispatcher.Set();
+            if (promoted > 0) signals.JobsReady();
             // Boxed so a store failure (null) is distinguishable from "nothing scheduled".
             var next = await storeBreaker.TryAsync("next-run-at", async () => Tuple.Create(await store.NextRunAtAsync(ct)), ct);
             var wait = next is null ? o.PollInterval

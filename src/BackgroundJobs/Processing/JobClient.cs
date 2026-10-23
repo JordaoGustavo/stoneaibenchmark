@@ -19,6 +19,8 @@ internal sealed class JobClient(
         if (maxAttempts < 1) throw new ArgumentException("maxAttempts must be >= 1");
         if (retryDelay < TimeSpan.Zero || retryDelay.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryDelay is out of range");
         if (jitter < TimeSpan.Zero || jitter.TotalMilliseconds > int.MaxValue) throw new ArgumentException("retryJitter is out of range");
+        var queue = JobQueues.CheckName(jobOptions?.Queue ?? JobQueues.Default);
+        var priority = JobQueues.CheckPriority(jobOptions?.Priority ?? JobQueues.DefaultPriority);
 
         // Unknown names are accepted (they fail when executed) and get version 1.
         var registration = registry.Find(jobName);
@@ -28,7 +30,7 @@ internal sealed class JobClient(
         var id = Guid.CreateVersion7(now);
         var job = new NewJob(
             id, jobName, JsonSerializer.Serialize(args, JobJson.Options), registration?.Options.ArgsVersion ?? 1, maxAttempts,
-            (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now);
+            (int)retryDelay.TotalMilliseconds, (int)jitter.TotalMilliseconds, jobOptions?.RunAt?.UtcDateTime, now, queue, priority);
         await store.InsertAsync(job, ct);
         signals.Entered(job.Creation.To);
         return id;

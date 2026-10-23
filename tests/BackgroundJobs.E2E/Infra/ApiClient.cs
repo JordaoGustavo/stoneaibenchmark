@@ -8,7 +8,7 @@ namespace BackgroundJobs.E2E.Infra;
 public sealed record JobView(
     string Id, string Name, JsonElement Args, string State, int Attempts, int MaxAttempts, int RetryDelayMs,
     DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
-    List<HistoryView> History, List<AttemptView> AttemptHistory);
+    List<HistoryView> History, List<AttemptView> AttemptHistory, string Queue, int Priority);
 
 public sealed record HistoryView(string State, DateTime At, string Reason);
 

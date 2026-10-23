@@ -3,9 +3,13 @@ using Microsoft.Extensions.Options;
 
 namespace BackgroundJobs.Processing;
 
-internal sealed record QueueSample(long Ready, TimeSpan OldestReadyAge, DateTimeOffset At);
+internal sealed record QueueDepth(string Queue, long Ready, TimeSpan OldestReadyAge);
 
-/// Samples the ready queue every QueueMonitorInterval for the queue gauges and the health check.
+/// Ready/OldestReadyAge cover the queues this node consumes, the ones its health depends on. Queues lists those (empty
+/// ones at 0) and every other queue with ready jobs.
+internal sealed record QueueSample(long Ready, TimeSpan OldestReadyAge, DateTimeOffset At, IReadOnlyList<QueueDepth> Queues);
+
+/// Samples the ready queues every QueueMonitorInterval for the queue gauges and the health check.
 /// Ages are measured at sampling time, so they may lag by up to one interval.
 internal sealed class QueueMonitor(
     IJobStore store, StoreCircuitBreaker storeBreaker, IOptions<BackgroundJobsOptions> options, TimeProvider time)
@@ -23,8 +27,13 @@ internal sealed class QueueMonitor(
             if (stats != null)
             {
                 var now = time.UtcNow();
-                var age = stats.OldestReadyAt is { } oldest && oldest < now ? now - oldest : TimeSpan.Zero;
-                _latest = new QueueSample(stats.Ready, age, now);
+                var consumedNames = options.Value.ConsumedQueues.Keys;
+                var queues = stats
+                    .Select(s => new QueueDepth(s.Queue, s.Ready, s.OldestReadyAt is { } oldest && oldest < now ? now - oldest : TimeSpan.Zero))
+                    .Concat(consumedNames.Where(q => stats.All(s => s.Queue != q)).Select(q => new QueueDepth(q, 0, TimeSpan.Zero)))
+                    .OrderBy(q => q.Queue, StringComparer.Ordinal).ToList();
+                var consumed = queues.Where(q => consumedNames.Contains(q.Queue)).ToList();
+                _latest = new QueueSample(consumed.Sum(q => q.Ready), consumed.Select(q => q.OldestReadyAge).DefaultIfEmpty().Max(), now, queues);
             }
             try { await Task.Delay(options.Value.QueueMonitorInterval, time, ct); }
             catch (OperationCanceledException) { return; }

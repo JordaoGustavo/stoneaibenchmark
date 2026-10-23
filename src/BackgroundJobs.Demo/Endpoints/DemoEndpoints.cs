@@ -10,7 +10,8 @@ public static class DemoEndpoints
 {
     private sealed record CreateJobRequest(string Job, JsonElement Params, CreateJobOptions? Options = null);
 
-    private sealed record CreateJobOptions(DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null);
+    private sealed record CreateJobOptions(
+        DateTimeOffset? RunAt = null, int? MaxAttempts = null, int? RetryDelayMs = null, string? Queue = null, int? Priority = null);
 
     /// Strict input: unknown fields, missing parameters, nulls and numbers-as-strings are rejected.
     private static readonly JsonSerializerOptions Strict = new(JsonSerializerDefaults.Web)
@@ -76,6 +77,9 @@ public static class DemoEndpoints
             RunAt = o.RunAt,
             MaxAttempts = o.MaxAttempts,
             RetryDelay = o.RetryDelayMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+            // Queue and priority are checked by the library (ArgumentException → 400).
+            Queue = o.Queue,
+            Priority = o.Priority,
         };
     }
 

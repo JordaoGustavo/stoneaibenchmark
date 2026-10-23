@@ -187,6 +187,8 @@ Campos não informados usam os padrões de `BackgroundJobsOptions`.
 | `MaxAttempts` (`int?`) | Total de execuções, incluindo a primeira (≥ 1) |
 | `RetryDelay` (`TimeSpan?`) | Espera fixa entre tentativas (≥ 0) |
 | `RetryJitter` (`TimeSpan?`) | Atraso aleatório extra em `[0, RetryJitter]` somado a cada retry |
+| `Queue` (`string?`) | Fila do job (padrão `"default"`). 1–64 caracteres `a-z`, `0-9`, `-`, `_`, `.`, começando por letra ou dígito (`JobQueues.IsValidName`) |
+| `Priority` (`int?`) | Maior roda primeiro dentro da fila; de `-100` a `100`, padrão `0` (`JobQueues`) |
 
 Agendamento não tem método próprio — é `EnqueueAsync` com `RunAt`:
 
@@ -202,10 +204,12 @@ await client.EnqueueAsync("greet", new GreetArgs("em 2s"), new JobOptions
 ### Modelos retornados
 
 ```csharp
-record JobSummary(Guid Id, string Name, JobState State, int Attempts);
+record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt,
+                  DateTime UpdatedAt, string Queue, int Priority);
 record Job(Guid Id, string Name, JsonElement Args, int ArgsVersion, JobState State, int Attempts, int MaxAttempts,
            TimeSpan RetryDelay, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
-           IReadOnlyList<JobHistoryEntry> History, IReadOnlyList<JobAttempt> AttemptHistory);
+           IReadOnlyList<JobHistoryEntry> History, IReadOnlyList<JobAttempt> AttemptHistory,
+           int RefundedAttempts, string Queue, int Priority);
 record JobHistoryEntry(JobState State, DateTime At, string Reason);
 record JobAttempt(int Attempt, DateTime StartedAt, DateTime? FinishedAt, AttemptOutcome? Outcome, string? Error);
 ```
@@ -224,12 +228,13 @@ connection string Npgsql `Host=...;Database=...`) ou `.UseInMemoryStorage()`. Se
 | `FinishedJobRetention` | **obrigatório** | Quanto tempo um job finalizado (`succeeded`, `failed`, `deleted`, `cancelled`) é mantido, com histórico e tentativas. `Timeout.InfiniteTimeSpan` mantém para sempre |
 | `RetentionSweepInterval` | `1min` | Frequência da limpeza de jobs finalizados |
 | `RetentionBatchSize` | `1000` | Jobs removidos por comando de limpeza (a limpeza repete até esgotar) |
-| `WorkerCount` | `4` | Máximo de jobs simultâneos neste processo (≥ 1) |
+| `WorkerCount` | `4` | Workers da fila `default` quando `Queues` está vazio (≥ 1); ignorado caso contrário |
+| `Queues` | vazio | Filas que este processo consome → workers de cada uma, ex. `{ ["default"] = 4, ["critical"] = 2 }`. Vazio = só `default` com `WorkerCount` |
 | `NodeId` | `Environment.MachineName` | Identidade do processo como dono do lease. **Único por processo** |
 | `LeaseDuration` | `30s` | Tempo até outro nó considerar o job abandonado (> 0) |
 | `PollInterval` | `250ms` | Polling de fallback da fila (o caminho normal é LISTEN/NOTIFY do Postgres) |
 | `SchedulerMaxWait` | `5s` | Espera máxima do agendador; normalmente dorme até o próximo `run_at` ou acorda por notificação |
-| `ClaimBatchSize` | `null` | Máximo de jobs por claim; `null` = tantos quanto houver slots livres (nunca acima de `WorkerCount`) |
+| `ClaimBatchSize` | `null` | Máximo de jobs por claim, por fila; `null` = tantos quanto a fila tiver slots livres (nunca acima dos workers dela) |
 | `DefaultMaxAttempts` | `3` | Padrão de `JobOptions.MaxAttempts` |
 | `DefaultRetryDelay` | `1s` | Padrão de `JobOptions.RetryDelay` |
 | `DefaultRetryJitter` | `0` | Padrão de `JobOptions.RetryJitter` |
@@ -297,11 +302,12 @@ Resultados de tentativa (`AttemptOutcome`): `succeeded`, `failed`, `interrupted`
 
 Os motivos do histórico estão em constantes públicas na classe `Reasons`.
 
-## 7. Retry, FIFO, workers e circuit breaker
+## 7. Retry, filas, prioridades, workers e circuit breaker
 
 - **Retry:** atraso **fixo** (`RetryDelay` + jitter aleatório opcional), não exponencial. A tentativa falha volta a `scheduled` e é promovida quando vencer.
-- **FIFO:** uma única fila global (sem filas nomeadas). A ordem é por entrada em `enqueued`; retries, recuperações e requeues vão para o fim da fila. Com `WorkerCount = 1` a ordem de execução é estrita.
-- **Workers:** um job só é reivindicado quando há slot livre (sem prefetch), então nunca roda mais que `WorkerCount` por processo. Vários processos podem compartilhar o banco (`FOR UPDATE SKIP LOCKED`).
+- **Filas:** cada job pertence a uma fila (`JobOptions.Queue`, padrão `default`), fixa por toda a vida dele (retries e requeues voltam para a mesma). Cada fila consumida (`Queues`) tem **seus próprios workers**: uma fila lotada de jobs lentos não atrasa outra. Uma fila que nenhum processo consome guarda seus jobs em `enqueued`; diferentes processos podem consumir filas diferentes do mesmo banco.
+- **Ordem:** dentro da fila, maior `Priority` primeiro; empate em ordem FIFO de entrada em `enqueued` (retries, recuperações e requeues vão para o fim da sua prioridade). Com 1 worker na fila a ordem de execução é estrita. Prioridade é estrita: um fluxo contínuo de jobs de prioridade alta faz os de baixa esperarem; isole cargas que não podem esperar em filas próprias.
+- **Workers:** um job só é reivindicado quando a sua fila tem slot livre (sem prefetch), então nunca rodam mais que os workers da fila por processo. Vários processos podem compartilhar o banco (`FOR UPDATE SKIP LOCKED`).
 - **Circuit breaker por tipo de job (opt-in):** após N falhas consecutivas, o tipo para de ser reivindicado por um tempo; depois deixa passar um único job de teste (half-open).
 
   ```csharp
@@ -333,12 +339,17 @@ Um store (SQL Server, Redis, ...) é um pacote próprio que referencia só o nú
   junto com `NewJob.Creation`. O store só aplica a transição de forma atômica, seguindo a mecânica comum descrita no
   comentário de `IJobStore`: guarda por estado de origem + versão (+ dono), incrementa a versão, limpa o lock, sequência
   FIFO ao entrar em `enqueued`, grava o histórico.
+  `ClaimAsync` recebe **uma fila** e devolve os jobs prontos dela em ordem (prioridade desc, entrada, sequência). Mantenha
+  os prontos de cada fila indexados nessa ordem, para o claim ler só o início de uma fila: no Postgres é o índice parcial
+  `bj_jobs_ready (queue, priority DESC, enqueued_at, enqueue_seq) WHERE state = 'enqueued'`; num Redis, um sorted set por
+  fila com score `(MaxPriority - priority) * 2^40 + sequência` (exato em `double` para as prioridades de `JobQueues`, que
+  por isso são limitadas). `QueueStatsAsync` devolve uma entrada por fila com jobs prontos.
 - **`IJobStoreListener`** (opcional) — acorda os loops quando *outro nó* muda o store (no Postgres, LISTEN/NOTIFY), via
   `IJobSignals`. As mudanças do próprio nó já acordam os loops pelo núcleo; sem listener, outros nós são vistos no polling.
 - Um método de extensão `UseXxx(this BackgroundJobsBuilder)` que faz `Services.Replace` de `IJobStore` e `IJobStoreListener`
   (veja `src/BackgroundJobs.Postgres/PostgresBuilderExtensions.cs`).
 
-**Conformidade:** os cenários E2E que não dependem de durabilidade (S01–S07, S11, S13) rodam contra **todos** os stores
+**Conformidade:** os cenários E2E que não dependem de durabilidade (S01–S07, S11, S13, S17) rodam contra **todos** os stores
 de `Stores.All` (`tests/BackgroundJobs.E2E/Infra/PostgresFixture.cs`). Para validar um store novo, adicione-o ali e ao
 demo (`STORAGE=...`): o mesmo comportamento observável é o contrato. Cenários de restart/crash/parada (S08–S10) exigem
 store durável.
@@ -394,7 +405,7 @@ app.MapBackgroundJobsDashboard().RequireAuthorization("admin");
 `JobServerHealthCheck` (registrado automaticamente):
 
 - **Unhealthy** fora do intervalo "migrou/recuperou" → "pedido de parada", ou quando `MaxAbandonedJobs` jobs rodam sem worker (o próximo job travado vai segurar um worker de vez). `/health` (readiness) continua `200` nesse caso.
-- **Degraded** quando a fila está parada (algum job em `enqueued` há mais que `StalledQueueThreshold`, padrão 60 s) ou algum circuit breaker de job está `open` (`half-open` não degrada: já deixa passar um job de teste), ou algum job roda sem worker há mais que `AbandonedJobAlertAfter`. `/health/details` lista esses jobs em `abandoned` (`count`, `limit`, `full`, `alert`, `jobs[]` com `id`, `name`, `since`, `ageSeconds`).
+- **Degraded** quando a fila está parada (algum job de uma fila **consumida por este processo** em `enqueued` há mais que `StalledQueueThreshold`, padrão 60 s) ou algum circuit breaker de job está `open` (`half-open` não degrada: já deixa passar um job de teste), ou algum job roda sem worker há mais que `AbandonedJobAlertAfter`. `/health/details` lista esses jobs em `abandoned` (`count`, `limit`, `full`, `alert`, `jobs[]` com `id`, `name`, `since`, `ageSeconds`).
 - **Healthy** caso contrário. O `data` do resultado traz `ready`, `queue.*` e o estado de cada breaker.
 
 ```csharp
@@ -407,12 +418,13 @@ Ou use as rotas de `MapBackgroundJobsApi()`: `/health` (readiness, contrato da s
 ```json
 {
   "status": "degraded", "ready": true,
-  "queue": { "ready": 12, "oldestReadyAgeSeconds": 74.2, "stalled": true, "stalledThresholdSeconds": 60, "sampledAt": "…Z" },
+  "queue": { "ready": 12, "oldestReadyAgeSeconds": 74.2, "stalled": true, "stalledThresholdSeconds": 60, "sampledAt": "…Z",
+             "queues": [{ "name": "default", "consumed": true, "ready": 12, "oldestReadyAgeSeconds": 74.2 }] },
   "circuitBreakers": [ { "job": "send-email", "state": "open", "consecutiveFailures": 5, "openUntil": "…Z" } ]
 }
 ```
 
-A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
+A fila é amostrada a cada `QueueMonitorInterval` (padrão 5 s), então idade e profundidade podem estar até um intervalo atrasadas; `queue.ready` é `null` antes da primeira amostra. `ready`/`oldestReadyAgeSeconds`/`stalled` somam só as filas consumidas; `queues[]` detalha cada uma (filas consumidas vazias aparecem com 0, e as demais com jobs prontos com `consumed: false`). Jobs bloqueados por breaker aberto continuam em `enqueued` e contam para a fila parada.
 
 ### OpenTelemetry
 
@@ -431,8 +443,8 @@ builder.Services.AddOpenTelemetry()
 |---|---|---|---|
 | `backgroundjobs.attempt.duration` | histogram | `s` | `job.name`, `outcome` |
 | `backgroundjobs.attempts` | counter | `{attempt}` | `job.name`, `outcome` (`succeeded`/`failed`) — taxa de falha = `failed / total` |
-| `backgroundjobs.queue.depth` | gauge | `{job}` | — jobs em `enqueued` |
-| `backgroundjobs.queue.oldest_age` | gauge | `s` | — idade do job mais antigo em `enqueued` (0 se vazia) |
+| `backgroundjobs.queue.depth` | gauge | `{job}` | `queue` — jobs em `enqueued` |
+| `backgroundjobs.queue.oldest_age` | gauge | `s` | `queue` — idade do job mais antigo em `enqueued` (0 se vazia) |
 | `backgroundjobs.jobs.abandoned` | gauge | `{job}` | — jobs rodando além do timeout/cancelamento sem worker **neste nó** |
 
 Os gauges da fila vêm da mesma amostra do health check e são globais ao banco (todos os nós reportam o mesmo valor). `backgroundjobs.jobs.abandoned` é a exceção: é por processo, então some entre nós.
@@ -466,7 +478,7 @@ Todo log emitido durante uma tentativa — inclusive os do próprio job via `ILo
 - **Entrega at-least-once:** um job pode executar mais de uma vez (crash, ou banco indisponível por mais que `LeaseDuration` durante a execução). **Escreva jobs idempotentes.**
 - **Cancelamento cooperativo:** .NET não mata threads; um job que ignora o token continua rodando (sem worker, até `MaxAbandonedJobs`) até voltar, e atrasa o shutdown até `ShutdownTimeout`. Depois de um `ShutdownTimeout`, outro nó pode rodar o job enquanto este processo ainda encerra.
 - **Retry fixo**, sem backoff exponencial nativo (use `RetryJitter` para espalhar).
-- **Fila única**, sem prioridades nem filas nomeadas.
+- **Prioridade estrita**, sem aging: jobs de prioridade baixa podem esperar indefinidamente atrás de um fluxo contínuo de alta. A fila e a prioridade de um job não mudam depois do enqueue.
 - **Circuit breaker de job** é por processo, não compartilhado entre nós.
 - Mantenha os args pequenos (são `jsonb` e voltam em toda consulta de detalhe).
 

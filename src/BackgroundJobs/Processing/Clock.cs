@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace BackgroundJobs.Processing;
 
 internal static class Clock
@@ -37,12 +39,19 @@ internal sealed class WakeSignal
     }
 }
 
-/// Separate signals so a wake-up for the dispatcher is never consumed by the scheduler.
-internal sealed class Signals : Storage.IJobSignals
+/// Separate signals so a wake-up for the dispatcher is never consumed by the scheduler, and one per consumed queue so a
+/// wake-up for one queue's loop is never consumed by another's. Wake-ups do not say which queue: every loop checks its own.
+internal sealed class Signals(IOptions<BackgroundJobsOptions> options) : Storage.IJobSignals
 {
-    public WakeSignal Dispatcher { get; } = new();
+    private readonly Dictionary<string, WakeSignal> _queues = options.Value.ConsumedQueues.Keys.ToDictionary(q => q, _ => new WakeSignal());
+
+    public WakeSignal ForQueue(string queue) => _queues[queue];
     public WakeSignal Scheduler { get; } = new();
 
-    public void JobsReady() => Dispatcher.Set();
+    public void JobsReady()
+    {
+        foreach (var signal in _queues.Values) signal.Set();
+    }
+
     public void SchedulesChanged() => Scheduler.Set();
 }

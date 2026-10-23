@@ -17,6 +17,9 @@ dotnet run --project src/BackgroundJobs.Demo
 | `WORKER_COUNT` | `4`                                                                          |
 | `DATABASE_URL` | `Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=backgroundjobs` (também aceita `postgres://user:pass@host:5432/db`) |
 | `NODE_ID`      | nome da máquina                                                              |
+| `QUEUES`       | vazio = só `default` com `WORKER_COUNT` workers; ex. `default=4,critical=2`  |
+
+`POST /demo/jobs` aceita `options.queue` e `options.priority` (de `-100` a `100`, maior roda primeiro).
 
 **Desvio da spec:** o armazenamento é Postgres, então `DATA_DIR` não é usado; os dados ficam no volume `pgdata` do compose.
 Reiniciar com os mesmos dados = rodar a demo de novo apontando para o mesmo `DATABASE_URL`.

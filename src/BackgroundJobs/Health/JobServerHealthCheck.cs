@@ -38,7 +38,9 @@ public sealed class JobServerHealthCheck : IHealthCheck
         var threshold = _options.Value.StalledQueueThreshold;
         var sample = _queue.Latest;
         var queue = new QueueHealth(
-            sample?.Ready, sample?.OldestReadyAge, sample?.At, sample != null && sample.OldestReadyAge > threshold, threshold);
+            sample?.Ready, sample?.OldestReadyAge, sample?.At, sample != null && sample.OldestReadyAge > threshold, threshold,
+            sample?.Queues.Select(q => new QueueDepthHealth(
+                q.Queue, _options.Value.ConsumedQueues.ContainsKey(q.Queue), q.Ready, q.OldestReadyAge)).ToList() ?? []);
         var breakers = _breakers.Snapshot()
             .Select(b => new CircuitBreakerHealth(b.Job, b.State, b.ConsecutiveFailures, b.OpenUntil)).ToList();
         var o = _options.Value;
@@ -97,8 +99,13 @@ public sealed record AbandonedHealth(IReadOnlyList<AbandonedJobHealth> Jobs, int
 
 public sealed record AbandonedJobHealth(Guid Id, string Name, DateTimeOffset Since, TimeSpan Age);
 
-/// Ready/OldestReadyAge/SampledAt are null until the queue was sampled once.
-public sealed record QueueHealth(long? Ready, TimeSpan? OldestReadyAge, DateTimeOffset? SampledAt, bool Stalled, TimeSpan StalledThreshold);
+/// Ready/OldestReadyAge/SampledAt are null until the queues were sampled once. They, and Stalled, cover the queues this
+/// node consumes: a queue served only by other nodes does not make this one unhealthy. Queues breaks them down per queue.
+public sealed record QueueHealth(
+    long? Ready, TimeSpan? OldestReadyAge, DateTimeOffset? SampledAt, bool Stalled, TimeSpan StalledThreshold, IReadOnlyList<QueueDepthHealth> Queues);
+
+/// Consumed: whether this node has workers for the queue.
+public sealed record QueueDepthHealth(string Queue, bool Consumed, long Ready, TimeSpan OldestReadyAge);
 
 /// State: closed, open or half-open.
 public sealed record CircuitBreakerHealth(string Job, string State, int ConsecutiveFailures, DateTimeOffset? OpenUntil);

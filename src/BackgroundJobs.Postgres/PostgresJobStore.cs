@@ -37,14 +37,15 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         await using var tx = await conn.BeginTransactionAsync(ct);
         await conn.ExecuteAsync("""
             INSERT INTO bj_jobs (id, name, args, args_version, state, max_attempts, retry_delay_ms, retry_jitter_ms,
-                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at)
+                                 run_at, enqueued_at, enqueue_seq, created_at, updated_at, queue, priority)
             VALUES (@Id, @Name, @ArgsJson::jsonb, @ArgsVersion, @State, @MaxAttempts, @RetryDelayMs, @RetryJitterMs,
-                    @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now)
+                    @RunAt, @EnqueuedAt, CASE WHEN @Scheduled THEN NULL ELSE nextval('bj_enqueue_seq') END, @Now, @Now, @Queue, @Priority)
             """,
             new
             {
                 job.Id, job.Name, job.ArgsJson, job.ArgsVersion, State = creation.To.ToWire(), job.MaxAttempts, job.RetryDelayMs, job.RetryJitterMs,
                 RunAt = scheduled ? job.RunAt : null, EnqueuedAt = scheduled ? (DateTime?)null : job.Now, Scheduled = scheduled, job.Now,
+                job.Queue, job.Priority,
             }, tx);
         await InsertHistoryAsync(conn, tx, job.Id, creation.To, job.Now, creation.Reason);
         await NotifyAsync(conn, tx, creation.To);
@@ -68,18 +69,18 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             history.Select(h => new JobHistoryEntry(JobStateWire.ParseState(h.State), h.At, h.Reason)).ToList(),
             attempts.Select(a => new JobAttempt(a.Attempt, a.StartedAt, a.FinishedAt,
                 a.Outcome == null ? null : JobStateWire.ParseOutcome(a.Outcome), a.Error)).ToList(),
-            row.RefundedAttempts);
+            row.RefundedAttempts, row.Queue, row.Priority);
     }
 
     public async Task<IReadOnlyList<JobSummary>> ListAsync(Guid? after, int limit, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<SummaryRow>("""
-            SELECT id, name, state, attempts, run_at, created_at, updated_at FROM bj_jobs
+            SELECT id, name, state, attempts, run_at, created_at, updated_at, queue, priority FROM bj_jobs
             WHERE @after::uuid IS NULL OR id > @after::uuid
             ORDER BY id LIMIT @limit
             """, new { after, limit });
-        return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt)).ToList();
+        return rows.Select(r => new JobSummary(r.Id, r.Name, JobStateWire.ParseState(r.State), r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority)).ToList();
     }
 
     public async Task<DateTime?> NextRunAtAsync(CancellationToken ct)
@@ -110,18 +111,19 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         return promoted;
     }
 
-    public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
+    public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
+        string queue, string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
         // One statement = one transaction: claim, attempts++, open attempts, history.
         var rows = await conn.QueryAsync<ClaimedJob>("""
             WITH locked AS (
-                SELECT id, enqueued_at, enqueue_seq FROM bj_jobs
-                WHERE state = ANY(@from) AND NOT (name = ANY(@excluded))
-                ORDER BY enqueued_at, enqueue_seq
+                SELECT id, priority, enqueued_at, enqueue_seq FROM bj_jobs
+                WHERE queue = @queue AND state = ANY(@from) AND NOT (name = ANY(@excluded))
+                ORDER BY priority DESC, enqueued_at, enqueue_seq
                 LIMIT @limit FOR UPDATE SKIP LOCKED
             ), next AS (
-                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY enqueued_at, enqueue_seq)] AS attempt_id FROM locked
+                SELECT id, (@attemptIds::uuid[])[row_number() OVER (ORDER BY priority DESC, enqueued_at, enqueue_seq)] AS attempt_id FROM locked
             ), claimed AS (
                 UPDATE bj_jobs j SET state = @to, attempts = j.attempts + 1, version = j.version + 1,
                        updated_at = @now, locked_by = @nodeId, lease_expires_at = @leaseUntil
@@ -137,18 +139,19 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
             SELECT id, name, args::text AS args_json, args_version, attempts AS attempt, max_attempts, retry_delay_ms, retry_jitter_ms,
                    version, attempt_id, run, refunded_attempts
             FROM claimed
-            ORDER BY enqueued_at, enqueue_seq
+            ORDER BY priority DESC, enqueued_at, enqueue_seq
             """,
-            new { nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(),
+            new { queue, nodeId, now, leaseUntil, limit, attemptIds = Enumerable.Range(0, limit).Select(_ => Guid.CreateVersion7()).ToArray(), excluded = excludedNames.ToArray(),
                 from = Wire(JobTransition.Claim.From), to = JobTransition.Claim.To.ToWire(), reason = JobTransition.Claim.Reason });
         return rows.AsList();
     }
 
-    public async Task<QueueStats> QueueStatsAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<QueueStats>> QueueStatsAsync(CancellationToken ct)
     {
         await using var conn = await db.OpenConnectionAsync(ct);
-        return await conn.QuerySingleAsync<QueueStats>(
-            "SELECT count(*) AS ready, min(enqueued_at) AS oldest_ready_at FROM bj_jobs WHERE state = 'enqueued'");
+        var rows = await conn.QueryAsync<(string Queue, long Ready, DateTime? OldestReadyAt)>(
+            "SELECT queue, count(*), min(enqueued_at) FROM bj_jobs WHERE state = 'enqueued' GROUP BY queue");
+        return rows.Select(r => new QueueStats(r.Queue, r.Ready, r.OldestReadyAt)).ToList();
     }
 
     public async Task<bool> FinishAsync(
@@ -293,6 +296,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public string Name { get; set; } = "";
         public string ArgsJson { get; set; } = "";
         public int ArgsVersion { get; set; }
+        public string Queue { get; set; } = "";
+        public int Priority { get; set; }
         public string State { get; set; } = "";
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }
@@ -328,6 +333,8 @@ internal sealed class PostgresJobStore(NpgsqlDataSource db) : IJobStore
         public DateTime? RunAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+        public string Queue { get; set; } = "";
+        public int Priority { get; set; }
     }
 
     private sealed class StaleRow

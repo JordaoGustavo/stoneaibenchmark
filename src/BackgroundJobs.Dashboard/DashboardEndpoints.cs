@@ -168,6 +168,8 @@ public static class DashboardEndpoints
                 .Append(Meta("Attempts", job.RefundedAttempts == 0
                     ? $"{job.Attempts - job.RefundedAttempts} of {job.MaxAttempts}"
                     : $"{job.Attempts - job.RefundedAttempts} of {job.MaxAttempts} (+{job.RefundedAttempts} interrupted by shutdown)"))
+                .Append(Meta("Queue", E(job.Queue)))
+                .Append(Meta("Priority", job.Priority.ToString()))
                 .Append(Meta("Retry delay", Duration(job.RetryDelay)))
                 .Append(Meta("Runs", runs.Count.ToString()))
                 .Append(Meta("Created", Local(job.CreatedAt, tz, now)))

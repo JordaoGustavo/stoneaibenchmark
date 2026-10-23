@@ -52,7 +52,8 @@ internal sealed class JobServer(
 
         var loops = new[] { dispatcher.RunAsync(ct), scheduler.RunAsync(ct), heartbeat.RunAsync(ct), queueMonitor.RunAsync(ct), retention.RunAsync(ct), listener.RunAsync(ct) };
         _ready = true;
-        logger.LogInformation("job server {NodeId} started with {Workers} workers", o.NodeId, o.WorkerCount);
+        logger.LogInformation("job server {NodeId} started; workers per queue: {Queues}", o.NodeId,
+            string.Join(", ", o.ConsumedQueues.Select(q => $"{q.Key}={q.Value}")));
         await Task.WhenAll(loops);
     }
 

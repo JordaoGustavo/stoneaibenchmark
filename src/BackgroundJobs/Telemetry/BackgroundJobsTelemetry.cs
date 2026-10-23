@@ -25,11 +25,11 @@ internal sealed class JobsMetrics
         // Failure rate = attempts{outcome=failed} / attempts.
         _attempts = meter.CreateCounter<long>("backgroundjobs.attempts", "{attempt}", "Finished job attempts by outcome");
         meter.CreateObservableGauge("backgroundjobs.queue.depth",
-            () => queue.Latest is { } s ? [new Measurement<long>(s.Ready)] : Array.Empty<Measurement<long>>(),
-            "{job}", "Jobs in enqueued, ready to run");
+            () => queue.Latest?.Queues.Select(q => new Measurement<long>(q.Ready, new KeyValuePair<string, object?>("queue", q.Queue))) ?? [],
+            "{job}", "Jobs in enqueued, ready to run, per queue");
         meter.CreateObservableGauge("backgroundjobs.queue.oldest_age",
-            () => queue.Latest is { } s ? [new Measurement<double>(s.OldestReadyAge.TotalSeconds)] : Array.Empty<Measurement<double>>(),
-            "s", "Age of the oldest job in enqueued (0 when empty)");
+            () => queue.Latest?.Queues.Select(q => new Measurement<double>(q.OldestReadyAge.TotalSeconds, new KeyValuePair<string, object?>("queue", q.Queue))) ?? [],
+            "s", "Age of the oldest job in enqueued, per queue with ready jobs");
         meter.CreateObservableGauge("backgroundjobs.jobs.abandoned", () => (long)abandoned.Snapshot().Count,
             "{job}", "Jobs still running past their timeout or cancel without a worker");
     }

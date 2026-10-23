@@ -13,11 +13,31 @@ public sealed record JobOptions
 
     /// Random extra delay in [0, RetryJitter] added to each retry.
     public TimeSpan? RetryJitter { get; init; }
+
+    /// The queue the job waits in; only servers consuming it (<see cref="BackgroundJobsOptions.Queues"/>) run it.
+    /// Defaults to <see cref="JobQueues.Default"/>. See <see cref="JobQueues.IsValidName"/>.
+    public string? Queue { get; init; }
+
+    /// Higher runs first within its queue, between <see cref="JobQueues.MinPriority"/> and <see cref="JobQueues.MaxPriority"/>.
+    /// Defaults to <see cref="JobQueues.DefaultPriority"/>.
+    public int? Priority { get; init; }
 }
 
 public sealed class BackgroundJobsOptions
 {
+    /// Workers for <see cref="JobQueues.Default"/> when <see cref="Queues"/> is empty; ignored otherwise.
     public int WorkerCount { get; set; } = 4;
+
+    /// The queues this server consumes and how many workers each one gets; each queue has its own workers, so a busy
+    /// queue never holds up another. Empty: only <see cref="JobQueues.Default"/>, with <see cref="WorkerCount"/> workers.
+    /// Jobs in a queue no server consumes stay enqueued.
+    public Dictionary<string, int> Queues { get; set; } = [];
+
+    /// <see cref="Queues"/>, or the default queue with <see cref="WorkerCount"/> workers when it is empty.
+    internal IReadOnlyDictionary<string, int> ConsumedQueues =>
+        Queues.Count > 0 ? Queues : new Dictionary<string, int> { [JobQueues.Default] = WorkerCount };
+
+    internal int TotalWorkers => ConsumedQueues.Values.Sum();
 
     /// Identifies this process as lease owner. Restarting with the same id recovers its jobs immediately.
     public string NodeId { get; set; } = Environment.MachineName;
@@ -28,7 +48,7 @@ public sealed class BackgroundJobsOptions
     /// Longest the scheduler sleeps without checking the store; a fallback for missed notifications.
     public TimeSpan SchedulerMaxWait { get; set; } = TimeSpan.FromSeconds(5);
 
-    /// Max jobs claimed per query. Null: as many as there are free worker slots.
+    /// Max jobs claimed per query, per queue. Null: as many as the queue has free worker slots.
     public int? ClaimBatchSize { get; set; }
 
     public int DefaultMaxAttempts { get; set; } = 3;
@@ -45,7 +65,7 @@ public sealed class BackgroundJobsOptions
     public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
 
     /// Most jobs that may run past their grace period at once without a worker. Beyond it, such a job keeps its worker.
-    /// Bounds the threads a pile of stuck jobs can take: at most WorkerCount + MaxAbandonedJobs jobs run at once.
+    /// Bounds the threads a pile of stuck jobs can take: at most (all queues' workers) + MaxAbandonedJobs jobs run at once.
     public int MaxAbandonedJobs { get; set; } = 4;
 
     /// The health check reports degraded once a job has run without its worker for longer than this. A job whose code
@@ -82,6 +102,11 @@ public sealed class BackgroundJobsOptions
         if (RetentionSweepInterval <= TimeSpan.Zero) throw new ArgumentException("RetentionSweepInterval must be positive");
         if (RetentionBatchSize < 1) throw new ArgumentException("RetentionBatchSize must be >= 1");
         if (WorkerCount < 1) throw new ArgumentException("WorkerCount must be >= 1");
+        foreach (var (queue, workers) in Queues)
+        {
+            JobQueues.CheckName(queue);
+            if (workers < 1) throw new ArgumentException($"Queues['{queue}'] must be >= 1");
+        }
         if (ClaimBatchSize < 1) throw new ArgumentException("ClaimBatchSize must be >= 1");
         if (LeaseDuration <= TimeSpan.Zero) throw new ArgumentException("LeaseDuration must be positive");
         if (QueueMonitorInterval <= TimeSpan.Zero) throw new ArgumentException("QueueMonitorInterval must be positive");

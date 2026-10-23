@@ -2,7 +2,9 @@ using System.Text.Json;
 
 namespace BackgroundJobs;
 
-public sealed record JobSummary(Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt);
+public sealed record JobSummary(
+    Guid Id, string Name, JobState State, int Attempts, DateTime? ScheduledAt, DateTime CreatedAt, DateTime UpdatedAt,
+    string Queue = JobQueues.Default, int Priority = JobQueues.DefaultPriority);
 
 public sealed record Job(
     Guid Id,
@@ -21,7 +23,9 @@ public sealed record Job(
     IReadOnlyList<JobHistoryEntry> History,
     IReadOnlyList<JobAttempt> AttemptHistory,
     /// Attempts of the current run given back because a server stopped; Attempts - RefundedAttempts counts against MaxAttempts.
-    int RefundedAttempts = 0);
+    int RefundedAttempts = 0,
+    string Queue = JobQueues.Default,
+    int Priority = JobQueues.DefaultPriority);
 
 public sealed record JobHistoryEntry(JobState State, DateTime At, string Reason);
 

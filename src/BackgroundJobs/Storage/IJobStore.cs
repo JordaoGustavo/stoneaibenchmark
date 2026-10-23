@@ -4,7 +4,8 @@ namespace BackgroundJobs.Storage;
 // Application code never uses these types; it talks to IJobClient.
 
 public sealed record NewJob(
-    Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now)
+    Guid Id, string Name, string ArgsJson, int ArgsVersion, int MaxAttempts, int RetryDelayMs, int RetryJitterMs, DateTime? RunAt, DateTime Now,
+    string Queue, int Priority)
 {
     /// Whether the job starts scheduled (RunAt in the future) or enqueued.
     public JobTransition Creation => JobTransition.Create(RunAt > Now);
@@ -19,8 +20,8 @@ public sealed record ClaimedJob(
     public int CountedAttempts => Attempt - RefundedAttempts;
 }
 
-/// Jobs ready to run right now and when the oldest of them became ready.
-public sealed record QueueStats(long Ready, DateTime? OldestReadyAt);
+/// Jobs of one queue ready to run right now and when the oldest of them became ready.
+public sealed record QueueStats(string Queue, long Ready, DateTime? OldestReadyAt);
 
 /// Wakes this node's loops when another node changes the store (this node's own changes wake them already).
 /// Stores that only live in this process need none.
@@ -55,7 +56,7 @@ public static class JobSignalsExtensions
 /// - applies only if the job is in one of <see cref="JobTransition.From"/>, still has the version the caller read and,
 ///   when an owner is given, is still locked by that node; otherwise it changes nothing and reports false;
 /// - bumps the version, sets updated_at, clears the lock and lease, sets run_at only when entering scheduled;
-/// - entering enqueued sets enqueued_at and takes the next FIFO sequence number;
+/// - entering enqueued sets enqueued_at and takes the next FIFO sequence number (queue and priority never change);
 /// - <see cref="JobTransition.ResetAttempts"/> sets attempts and refunded attempts to 0 and starts a new run;
 /// - <see cref="JobTransition.RefundAttempt"/> increments refunded attempts (attempt numbers keep growing);
 /// - clears a pending cancel request;
@@ -78,10 +79,15 @@ public interface IJobStore
     /// <see cref="JobTransition.Promote"/> for every scheduled job whose run_at has passed. Returns how many were promoted.
     Task<int> PromoteDueAsync(DateTime now, CancellationToken ct);
 
-    /// <see cref="JobTransition.Claim"/> for up to <paramref name="limit"/> enqueued jobs in FIFO order (enqueued_at, sequence),
-    /// skipping <paramref name="excludedNames"/>. Each claim increments attempts, locks the job to <paramref name="nodeId"/>
-    /// until <paramref name="leaseUntil"/> and opens an attempt; all in one atomic step. Returned in FIFO order.
-    Task<IReadOnlyList<ClaimedJob>> ClaimAsync(string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct);
+    /// <see cref="JobTransition.Claim"/> for up to <paramref name="limit"/> enqueued jobs of <paramref name="queue"/> only, in
+    /// claim order: priority descending, then FIFO (enqueued_at, sequence); skipping <paramref name="excludedNames"/>. Each
+    /// claim increments attempts, locks the job to <paramref name="nodeId"/> until <paramref name="leaseUntil"/> and opens
+    /// an attempt; all in one atomic step. Returned in claim order.
+    /// A store keeps the ready jobs of each queue indexed in that order, so a claim reads the head of one queue: a partial
+    /// index on (queue, priority desc, enqueued_at, sequence) in SQL; in Redis, a sorted set per queue scored by
+    /// (MaxPriority - priority) * 2^40 + sequence, which stays an exact double for <see cref="JobQueues"/> priorities.
+    Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
+        string queue, string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct);
 
     /// Applies <paramref name="transition"/> (<see cref="JobTransition.Succeed"/>, <see cref="JobTransition.Fail"/> or <see cref="JobTransition.Interrupt"/>) if this
     /// node still owns the job, and closes its attempt with <paramref name="outcome"/>. False when the job was taken away.
@@ -103,7 +109,8 @@ public interface IJobStore
     /// requested, as cancelled with <see cref="JobTransition.Cancel"/>.
     Task<int> RecoverAsync(DateTime now, string? ownNodeId, CancellationToken ct);
 
-    Task<QueueStats> QueueStatsAsync(CancellationToken ct);
+    /// One entry per queue that has ready jobs, whether or not this node consumes it.
+    Task<IReadOnlyList<QueueStats>> QueueStatsAsync(CancellationToken ct);
 
     /// Applies a user transition (<see cref="JobTransition.Delete"/>, <see cref="JobTransition.Requeue"/>).
     /// <exception cref="JobNotFoundException"/> <exception cref="InvalidJobTransitionException"/>

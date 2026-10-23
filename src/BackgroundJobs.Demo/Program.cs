@@ -26,6 +26,14 @@ var jobs = builder.Services.AddBackgroundJobs(
     o =>
     {
         o.WorkerCount = int.Parse(Env("WORKER_COUNT", "4"));
+        // "name=workers,name=workers"; unset consumes only the default queue with WORKER_COUNT workers.
+        foreach (var queue in Env("QUEUES", "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = queue.Split('=');
+            if (parts.Length != 2 || !int.TryParse(parts[1], out var workers))
+                throw new ArgumentException($"QUEUES entry '{queue}' must be name=workers");
+            o.Queues[parts[0]] = workers;
+        }
         o.NodeId = Env("NODE_ID", Environment.MachineName);
         o.QueueMonitorInterval = TimeSpan.FromMilliseconds(int.Parse(Env("QUEUE_MONITOR_MS", "5000")));
         // Required by the library. "unset" leaves it unset so tests can see startup refuse it.

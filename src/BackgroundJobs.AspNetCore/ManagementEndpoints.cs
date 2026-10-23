@@ -32,6 +32,10 @@ public static class ManagementEndpoints
                     stalled = r.Queue.Stalled,
                     stalledThresholdSeconds = r.Queue.StalledThreshold.TotalSeconds,
                     sampledAt = r.Queue.SampledAt?.UtcDateTime,
+                    queues = r.Queue.Queues.Select(q => new
+                    {
+                        name = q.Queue, consumed = q.Consumed, ready = q.Ready, oldestReadyAgeSeconds = q.OldestReadyAge.TotalSeconds,
+                    }),
                 },
                 circuitBreakers = r.CircuitBreakers.Select(b => new
                 {
@@ -64,7 +68,7 @@ public static class ManagementEndpoints
             var page = await client.ListAsync(cursor, pageSize, ct);
             return Results.Ok(new
             {
-                items = page.Select(j => new { id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts }),
+                items = page.Select(j => new { id = j.Id.ToString(), name = j.Name, state = j.State.ToWire(), attempts = j.Attempts, queue = j.Queue, priority = j.Priority }),
                 nextCursor = page.Count == pageSize ? page[^1].Id.ToString() : null,
             });
         });
@@ -115,6 +119,8 @@ public static class ManagementEndpoints
         state = job.State.ToWire(),
         attempts = job.Attempts,
         maxAttempts = job.MaxAttempts,
+        queue = job.Queue,
+        priority = job.Priority,
         retryDelayMs = (int)job.RetryDelay.TotalMilliseconds,
         scheduledAt = job.ScheduledAt,
         createdAt = job.CreatedAt,

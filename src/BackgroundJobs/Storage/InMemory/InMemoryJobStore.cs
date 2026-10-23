@@ -21,7 +21,7 @@ internal sealed class InMemoryJobStore : IJobStore
             {
                 Id = job.Id, Name = job.Name, ArgsJson = job.ArgsJson, ArgsVersion = job.ArgsVersion,
                 MaxAttempts = job.MaxAttempts, RetryDelayMs = job.RetryDelayMs, RetryJitterMs = job.RetryJitterMs,
-                CreatedAt = job.Now,
+                CreatedAt = job.Now, Queue = job.Queue, Priority = job.Priority,
             };
             Enter(row, creation, job.Now, creation.To == JobState.Scheduled ? job.RunAt : null);
             _jobs.Add(job.Id, row);
@@ -37,7 +37,7 @@ internal sealed class InMemoryJobStore : IJobStore
             return Task.FromResult<Job?>(new Job(
                 r.Id, r.Name, JsonDocument.Parse(r.ArgsJson).RootElement.Clone(), r.ArgsVersion, r.State, r.Attempts, r.MaxAttempts,
                 TimeSpan.FromMilliseconds(r.RetryDelayMs), r.State == JobState.Scheduled ? r.RunAt : null, r.CreatedAt, r.UpdatedAt,
-                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts));
+                r.History.ToList(), r.AttemptLog.Select(a => a.ToPublic()).ToList(), r.RefundedAttempts, r.Queue, r.Priority));
         }
     }
 
@@ -50,7 +50,7 @@ internal sealed class InMemoryJobStore : IJobStore
                 .Where(r => cursor == null || string.CompareOrdinal(r.Key, cursor) > 0)
                 .OrderBy(r => r.Key, StringComparer.Ordinal)
                 .Take(limit)
-                .Select(r => new JobSummary(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt))
+                .Select(r => new JobSummary(r.Id, r.Name, r.State, r.Attempts, r.RunAt, r.CreatedAt, r.UpdatedAt, r.Queue, r.Priority))
                 .ToList();
             return Task.FromResult(page);
         }
@@ -76,13 +76,13 @@ internal sealed class InMemoryJobStore : IJobStore
     }
 
     public Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
-        string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
+        string queue, string nodeId, DateTime now, DateTime leaseUntil, int limit, IReadOnlyCollection<string> excludedNames, CancellationToken ct)
     {
         lock (_lock)
         {
             var ready = _jobs.Values
-                .Where(r => JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name))
-                .OrderBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
+                .Where(r => r.Queue == queue && JobTransition.Claim.Allows(r.State) && !excludedNames.Contains(r.Name))
+                .OrderByDescending(r => r.Priority).ThenBy(r => r.EnqueuedAt).ThenBy(r => r.EnqueueSeq)
                 .Take(limit)
                 .ToList();
             IReadOnlyList<ClaimedJob> claimed = ready.Select(r =>
@@ -162,12 +162,15 @@ internal sealed class InMemoryJobStore : IJobStore
         return Task.FromResult(recovered);
     }
 
-    public Task<QueueStats> QueueStatsAsync(CancellationToken ct)
+    public Task<IReadOnlyList<QueueStats>> QueueStatsAsync(CancellationToken ct)
     {
         lock (_lock)
         {
-            var ready = _jobs.Values.Where(r => r.State == JobState.Enqueued).ToList();
-            return Task.FromResult(new QueueStats(ready.Count, ready.Min(r => r.EnqueuedAt)));
+            IReadOnlyList<QueueStats> stats = _jobs.Values.Where(r => r.State == JobState.Enqueued)
+                .GroupBy(r => r.Queue)
+                .Select(g => new QueueStats(g.Key, g.Count(), g.Min(r => r.EnqueuedAt)))
+                .ToList();
+            return Task.FromResult(stats);
         }
     }
 
@@ -227,6 +230,8 @@ internal sealed class InMemoryJobStore : IJobStore
         public required string Name { get; init; }
         public required string ArgsJson { get; init; }
         public int ArgsVersion { get; init; }
+        public required string Queue { get; init; }
+        public int Priority { get; init; }
         public JobState State { get; set; }
         public int Attempts { get; set; }
         public int RefundedAttempts { get; set; }
