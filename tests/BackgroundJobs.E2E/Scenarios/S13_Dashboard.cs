@@ -100,7 +100,7 @@ public sealed class S13_Dashboard(PostgresFixture pg)
 
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = demo.Api.BaseAddress };
         http.DefaultRequestHeaders.Add("Cookie", "bj_tz=America/Sao_Paulo");
-        Assert.Contains("Run at <span class=\"muted\">(America/Sao_Paulo)</span>", await http.GetStringAsync("/jobs/new/log-message"));
+        Assert.Contains("blank runs now · America/Sao_Paulo", await http.GetStringAsync("/jobs/new/log-message"));
 
         var posted = await http.PostAsync("/jobs/new/log-message", new FormUrlEncodedContent(new Dictionary<string, string>
         {

@@ -37,39 +37,41 @@ public static partial class DashboardEndpoints
         {
             var error = fieldErrors.GetValueOrDefault(prefix + key);
             return $"<div class=\"field{(error is null ? "" : " bad")}\"><label for=\"{idPrefix}{key}\">{label}</label>{control}" +
-                   (error is null ? $"<p class=\"hint\">{hint}</p>" : $"<p class=\"fielderr\">{E(error)}</p>") + "</div>";
+                   (error is not null ? $"<p class=\"fielderr\">{E(error)}</p>" : hint.Length > 0 ? $"<p class=\"hint\">{hint}</p>" : "") + "</div>";
         }
         string Input(string key, string label, string attrs, string placeholder, string hint) =>
             Field(key, label, $"<input {attrs} id=\"{idPrefix}{key}\" name=\"{prefix}{key}\" value=\"{Value(key)}\" placeholder=\"{E(placeholder)}\">", hint);
 
         var backoff = posted?[prefix + "retryBackoff"].LastOrDefault() ?? "";
         string Option(string value, string label) => $"<option value=\"{value}\"{(backoff == value ? " selected" : "")}>{label}</option>";
+        bool IsSet(string key) => (posted?[prefix + key].LastOrDefault()?.Trim().Length ?? 0) > 0;
         var set = posted?.Count(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal) && kv.Value.ToString().Trim().Length > 0) ?? 0;
         var hasErrors = fieldErrors.Keys.Any(k => k.StartsWith(prefix, StringComparison.Ordinal));
+        // The less common options stay folded unless one of them was filled in or failed validation.
+        string[] advanced = ["retryDelayMs", "retryJitterMs", "retryBackoff", "retryBackoffMultiplier", "maxRetryDelayMs", "idempotencyKey"];
+        var advancedOpen = advanced.Any(k => IsSet(k) || fieldErrors.ContainsKey(prefix + k));
         var defaultBackoff = defaults.DefaultRetryBackoff == RetryBackoff.Exponential ? "exponential" : "fixed";
+        var maxDelayDefault = defaults.DefaultMaxRetryDelay == Timeout.InfiniteTimeSpan ? "no cap" : Ms(defaults.DefaultMaxRetryDelay);
 
-        var sb = new StringBuilder("<details class=\"opts\"").Append(set > 0 || hasErrors ? " open" : "").Append("><summary>Options")
-            .Append(set > 0 ? $" <span class=\"muted\">· {set} set</span>" : "").Append("</summary><p class=\"muted\">Leave blank to use the server defaults shown in each field.</p>")
-            .Append("<h3 class=\"optgroup\">Scheduling</h3><div class=\"row\">")
-            .Append(Input("runAt", $"Run at <span class=\"muted\">({E(DashboardForms.ZoneLabel(tz))})</span>", "type=\"datetime-local\" step=\"1\"", "", "default: now"))
-            .Append(Input("queue", "Queue", "type=\"text\" class=\"mono\" autocomplete=\"off\" spellcheck=\"false\"", JobQueues.Default, $"default: {JobQueues.Default}"))
+        // Placeholders show the server defaults, so hints only say what a field means.
+        var sb = new StringBuilder("<details class=\"opts\"").Append(set > 0 || hasErrors ? " open" : "").Append("><summary>Options ")
+            .Append(set > 0 ? $"<span class=\"muted\">· {set} set</span>" : "<span class=\"muted\">· when, where and how many tries; blank uses the defaults</span>").Append("</summary>")
+            .Append("<div class=\"row\">")
+            .Append(Input("runAt", "Run at", "type=\"datetime-local\" step=\"1\"", "", $"blank runs now · {E(DashboardForms.ZoneLabel(tz))}"))
+            .Append(Input("queue", "Queue", "type=\"text\" class=\"mono\" autocomplete=\"off\" spellcheck=\"false\"", JobQueues.Default, ""))
             .Append(Input("priority", "Priority", $"type=\"number\" min=\"{JobQueues.MinPriority}\" max=\"{JobQueues.MaxPriority}\" step=\"1\"",
-                JobQueues.DefaultPriority.ToString(CultureInfo.InvariantCulture), $"{JobQueues.MinPriority} to {JobQueues.MaxPriority}, higher runs first; default: {JobQueues.DefaultPriority}"))
-            .Append(Input("idempotencyKey", "Idempotency key", "type=\"text\" class=\"mono\" maxlength=\"200\" autocomplete=\"off\"", "",
-                "while a job with this key is unfinished, enqueueing again returns that job"))
-            .Append("</div><h3 class=\"optgroup\">Retries</h3><div class=\"row\">")
-            .Append(Input("maxAttempts", "Max attempts", "type=\"number\" min=\"1\" step=\"1\"", Num(defaults.DefaultMaxAttempts), $"counts the first run; default: {defaults.DefaultMaxAttempts}"))
-            .Append(Input("retryDelayMs", "Retry delay (ms)", "type=\"number\" min=\"0\" step=\"1\"", Ms(defaults.DefaultRetryDelay), $"default: {Duration(defaults.DefaultRetryDelay)}"))
-            .Append(Input("retryJitterMs", "Retry jitter (ms)", "type=\"number\" min=\"0\" step=\"1\"", Ms(defaults.DefaultRetryJitter), $"random extra delay; default: {Duration(defaults.DefaultRetryJitter)}"))
-            .Append("</div><div class=\"row\">")
-            .Append(Field("retryBackoff", "Retry backoff", $"<select id=\"{idPrefix}retryBackoff\" name=\"{prefix}retryBackoff\">{Option("", $"Server default ({defaultBackoff})")}{Option("fixed", "Fixed")}{Option("exponential", "Exponential")}</select>",
-                "exponential multiplies the delay after each failure"))
+                JobQueues.DefaultPriority.ToString(CultureInfo.InvariantCulture), $"{JobQueues.MinPriority} to {JobQueues.MaxPriority}, higher first"))
+            .Append(Input("maxAttempts", "Max attempts", "type=\"number\" min=\"1\" step=\"1\"", Num(defaults.DefaultMaxAttempts), "includes the first run"))
+            .Append("</div><details class=\"more\"").Append(advancedOpen ? " open" : "").Append("><summary>Advanced <span class=\"muted\">· retry timing, deduplication</span></summary><div class=\"row\">")
+            .Append(Input("retryDelayMs", "Retry delay (ms)", "type=\"number\" min=\"0\" step=\"1\"", Ms(defaults.DefaultRetryDelay), ""))
+            .Append(Input("retryJitterMs", "Retry jitter (ms)", "type=\"number\" min=\"0\" step=\"1\"", Ms(defaults.DefaultRetryJitter), "random extra delay"))
+            .Append(Field("retryBackoff", "Retry backoff", $"<select id=\"{idPrefix}retryBackoff\" name=\"{prefix}retryBackoff\">{Option("", $"Default ({defaultBackoff})")}{Option("fixed", "Fixed")}{Option("exponential", "Exponential")}</select>", ""))
             .Append(Input("retryBackoffMultiplier", "Backoff multiplier", "type=\"number\" min=\"1\" max=\"100\" step=\"any\"",
-                defaults.DefaultRetryBackoffMultiplier.ToString(CultureInfo.InvariantCulture), $"1 to 100, exponential only; default: {defaults.DefaultRetryBackoffMultiplier.ToString(CultureInfo.InvariantCulture)}"))
-            .Append(Input("maxRetryDelayMs", "Max retry delay (ms)", "type=\"number\" min=\"0\" step=\"1\"",
-                defaults.DefaultMaxRetryDelay == Timeout.InfiniteTimeSpan ? "no cap" : Ms(defaults.DefaultMaxRetryDelay),
-                $"caps the backoff; default: {(defaults.DefaultMaxRetryDelay == Timeout.InfiniteTimeSpan ? "no cap" : Duration(defaults.DefaultMaxRetryDelay))}"))
-            .Append("</div>").Append(RegistrationInfo(http, jobName, defaults)).Append("</details>");
+                defaults.DefaultRetryBackoffMultiplier.ToString(CultureInfo.InvariantCulture), "exponential only"))
+            .Append(Input("maxRetryDelayMs", "Max retry delay (ms)", "type=\"number\" min=\"0\" step=\"1\"", maxDelayDefault, "caps the backoff"))
+            .Append(Input("idempotencyKey", "Idempotency key", "type=\"text\" class=\"mono\" maxlength=\"200\" autocomplete=\"off\"", "",
+                "skip if a job with this key is unfinished"))
+            .Append("</div></details>").Append(RegistrationInfo(http, jobName, defaults)).Append("</details>");
         return sb.ToString();
     }
 
@@ -83,9 +85,9 @@ public static partial class DashboardEndpoints
         var timeout = reg.Timeout is { } t ? Duration(t)
             : defaults.DefaultJobTimeout == Timeout.InfiniteTimeSpan ? "none" : $"{Duration(defaults.DefaultJobTimeout)} (server default)";
         var breaker = reg.CircuitBreaker is { } cb ? $"opens after {cb.FailureThreshold} failures, for {Duration(cb.BreakDuration)}" : "off";
-        return "<h3 class=\"optgroup\">Set at registration <span class=\"muted\">(read-only, per job type)</span></h3><dl class=\"reginfo\">" +
-               Meta("Timeout", timeout) + Meta("Max concurrency", reg.MaxConcurrency is { } m ? $"{m} in the cluster" : "unlimited") +
-               Meta("Circuit breaker", breaker) + Meta("Args version", Num(reg.ArgsVersion)) + "</dl>";
+        return "<p class=\"reginfo\"><span>Fixed for this job type:</span> " + string.Join(" · ",
+            $"timeout <b>{timeout}</b>", $"concurrency <b>{(reg.MaxConcurrency is { } m ? $"{m} in the cluster" : "unlimited")}</b>",
+            $"circuit breaker <b>{breaker}</b>", $"args v<b>{Num(reg.ArgsVersion)}</b>") + "</p>";
     }
 
     private static string Num(int n) => n.ToString(CultureInfo.InvariantCulture);
@@ -161,10 +163,9 @@ public static partial class DashboardEndpoints
     }
 
     private const string OptionsCss = """
-        .optgroup{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground);margin:16px 0 0}
-        .opts .row{margin-top:8px}.opts .hint{font-size:11px}
+        .opts .row{margin-top:10px}.opts .hint{font-size:11px}
+        .more{margin-top:12px}.more summary{cursor:pointer;font-weight:500;font-size:13px}
         .field.bad input,.field.bad select{border-color:var(--destructive)}.fielderr{margin:0;font-size:12px;color:var(--destructive)}
-        .reginfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 12px;margin:8px 0 0;padding:10px 12px;
-        border:1px dashed var(--border);border-radius:var(--radius)}.reginfo dd{font-weight:500;font-size:13px}
+        .reginfo{margin:12px 0 0;font-size:12px;color:var(--muted-foreground)}.reginfo b{font-weight:500;color:var(--foreground)}
         """;
 }

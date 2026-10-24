@@ -23,8 +23,8 @@ public sealed class S31_DashboardChainFromSingleForm(PostgresFixture pg)
         var single = await http.GetStringAsync("/jobs/new/log-message");
         foreach (var field in new[] { "runAt", "maxAttempts", "retryDelayMs", "retryJitterMs", "retryBackoff", "retryBackoffMultiplier", "maxRetryDelayMs", "queue", "priority", "idempotencyKey" })
             Assert.Contains($"name=\"opt.{field}\"", single);
-        Assert.Contains("default: 3", single);
-        Assert.Contains("Set at registration", single);
+        Assert.Contains("placeholder=\"3\"", single);
+        Assert.Contains("Fixed for this job type", single);
         Assert.Contains("formaction=\"/jobs/chain\"", single);
 
         // Add step from the single form: step 1 keeps args, options and the run-after parent.

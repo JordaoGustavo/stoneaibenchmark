@@ -308,7 +308,7 @@ public static partial class DashboardEndpoints
         body.Append("<form class=\"card pad form\" method=\"post\" action=\"").Append(basePath).Append("/new/").Append(Uri.EscapeDataString(name)).Append("\">")
             // Enter submits the first button: keep that "enqueue", not the "Add step" further down.
             .Append("<button class=\"sr-only\" type=\"submit\" tabindex=\"-1\" aria-hidden=\"true\"></button>")
-            .Append("<fieldset><legend>Arguments</legend>").Append(DashboardForms.Render(argsType, posted, Zone(http))).Append("</fieldset>")
+            .Append("<fieldset><legend>Arguments</legend><div class=\"args\">").Append(DashboardForms.Render(argsType, posted, Zone(http))).Append("</div></fieldset>")
             .Append(RunAfterSection(basePath, "after.", afterValue, parent, posted?["after.condition"].LastOrDefault()))
             .Append(OptionsFields(http, name, posted, Zone(http), "opt.", "o-"))
             .Append(AddStepRow(basePath, registry, steps: 1, single: name))
@@ -631,13 +631,14 @@ public static partial class DashboardEndpoints
         .kv dt:first-of-type,.kv dt:first-of-type+dd{border-top:0}.kv dd{word-break:break-word;font-weight:400}.kv pre{margin:0}
         .picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
         .pick{display:flex;flex-direction:column;gap:4px;text-decoration:none}.pick:hover{border-color:var(--foreground)}
-        .form{max-width:640px;display:flex;flex-direction:column;gap:16px}fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+        .form{display:flex;flex-direction:column;gap:16px}fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
         legend{font-weight:600;margin-bottom:10px}.field{display:flex;flex-direction:column;gap:6px}.field label{font-weight:500}
         input:not([type=checkbox]),select,textarea{height:36px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);
         background:var(--background);color:var(--foreground);font:inherit}textarea{height:auto;padding:8px 12px}
         input:focus,select:focus,textarea:focus{outline:2px solid var(--foreground);outline-offset:1px}
         .check{display:flex;gap:8px;align-items:center}.hint{color:var(--muted-foreground);margin:0;font-size:11px}
-        .opts summary{cursor:pointer;font-weight:600}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:12px}
+        .opts>summary{cursor:pointer;font-weight:600}
+        .args{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}.args .field:has(textarea),.args>.muted{grid-column:1/-1}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:12px}
         .actions.end{justify-content:flex-end}.alert ul{margin:6px 0 0;padding-left:18px}
         """ + ChainCss + OptionsCss;
 }

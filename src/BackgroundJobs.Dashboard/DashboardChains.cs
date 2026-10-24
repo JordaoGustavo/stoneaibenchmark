@@ -188,7 +188,7 @@ public static partial class DashboardEndpoints
             {
                 IFormCollection? values = step.Values is null ? null
                     : new FormCollection(step.Values.ToDictionary(kv => scope + kv.Key, kv => kv.Value));
-                body.Append(DashboardForms.Render(reg.ArgsType, values, tz, scope)).Append(OptionsFields(http, step.Job, values, tz, scope + "opt.", $"o{i}-"));
+                body.Append("<div class=\"args\">").Append(DashboardForms.Render(reg.ArgsType, values, tz, scope)).Append("</div>").Append(OptionsFields(http, step.Job, values, tz, scope + "opt.", $"o{i}-"));
             }
             body.Append("</div></div></li>");
         }
@@ -353,7 +353,7 @@ public static partial class DashboardEndpoints
         .parentchip{border:1px solid var(--border);border-left:3px solid #0891b2;border-radius:var(--radius);padding:10px 12px;background:var(--muted)}
         .parentchip.done{border-left-color:#16a34a}.parentchip p{font-size:12px}.parentchip a{text-decoration:none}.parentchip a:hover{text-decoration:underline}
         .nochildren{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px;border-style:dashed}
-        .chainform{max-width:760px}.chain{list-style:none;margin:0 0 8px;padding:0}
+        .chain{list-style:none;margin:0 0 8px;padding:0}
         .step{display:grid;grid-template-columns:32px minmax(0,1fr);gap:14px;align-items:start}
         .step>.card{overflow:visible}.step.invalid>.card{border-color:var(--destructive);box-shadow:0 0 0 1px var(--destructive)}
         .dot{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:600;font-size:13px;margin-top:8px;
